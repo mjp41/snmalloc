@@ -493,6 +493,37 @@ namespace snmalloc
       return alloc_size_error();
     }
 
+    SNMALLOC_FAST_PATH static size_t has_size(const void* p, size_t comp_size)
+    {
+      // This must be called on an external pointer.
+      size_t size = ChunkMap::get(address_cast(p));
+
+      if (likely(size == CMSuperslab))
+      {
+        Superslab* super = Superslab::get(p);
+
+        // Reading a remote sizeclass won't fail, since the other allocator
+        // can't reuse the slab, as we have no yet deallocated this pointer.
+        Slab* slab = Metaslab::get_slab(p);
+        Metaslab& meta = super->get_meta(slab);
+        sizeclass_t sc = meta.sizeclass;
+        return (comp_size <= sizeclass_to_size(sc)) 
+          && ((sc == 0) || (comp_size > sizeclass_to_size(sc - 1)));
+      }
+
+      if (likely(size == CMMediumslab))
+      {
+        Mediumslab* slab = Mediumslab::get(p);
+        sizeclass_t sc = slab->get_sizeclass();
+        // Reading a remote sizeclass won't fail, since the other allocator
+        // can't reuse the slab, as we have no yet deallocated this pointer.
+        return (comp_size <= sizeclass_to_size(sc)) 
+          && (comp_size > sizeclass_to_size(sc - 1));
+      }
+
+      return (comp_size <= (1ULL << size)) && (comp_size > (1ULL << (size - 1)));
+    }
+
     size_t get_id()
     {
       return id();

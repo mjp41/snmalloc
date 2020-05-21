@@ -63,18 +63,27 @@ extern "C"
     return Alloc::alloc_size(ptr);
   }
 
+  SNMALLOC_EXPORT void* SNMALLOC_NAME_MANGLE(realloc_sane)(void* ptr, size_t size)
+  {
+    size_t sz = Alloc::alloc_size(ptr);
+    auto alloc = ThreadAlloc::get_noncachable();
+    void* p = alloc->alloc(size);
+    if (p != nullptr)
+    {
+      SNMALLOC_ASSERT(p == Alloc::external_pointer<Start>(p));
+      memcpy(p, ptr, bits::min(size, sz));
+      alloc->dealloc(ptr, sz);
+    }
+    return p;
+  }
+
   SNMALLOC_EXPORT void* SNMALLOC_NAME_MANGLE(realloc)(void* ptr, size_t size)
   {
-    if (size == (size_t)-1)
-    {
-      errno = ENOMEM;
-      return nullptr;
-    }
-    if (ptr == nullptr)
+    if (unlikely(ptr == nullptr))
     {
       return SNMALLOC_NAME_MANGLE(malloc)(size);
     }
-    if (size == 0)
+    if (unlikely(size == 0))
     {
       SNMALLOC_NAME_MANGLE(free)(ptr);
       return nullptr;
@@ -88,20 +97,11 @@ extern "C"
         "Calling realloc on pointer that is not to the start of an allocation");
     }
 #endif
-    size_t sz = Alloc::alloc_size(ptr);
     // Keep the current allocation if the given size is in the same sizeclass.
-    if (sz == round_size(size))
+    if (Alloc::has_size(ptr, size))
       return ptr;
-
-    void* p = SNMALLOC_NAME_MANGLE(malloc)(size);
-    if (p != nullptr)
-    {
-      SNMALLOC_ASSERT(p == Alloc::external_pointer<Start>(p));
-      sz = bits::min(size, sz);
-      memcpy(p, ptr, sz);
-      SNMALLOC_NAME_MANGLE(free)(ptr);
-    }
-    return p;
+    
+    return SNMALLOC_NAME_MANGLE(realloc_sane)(ptr, size);
   }
 
 #if !defined(__FreeBSD__) && !defined(__OpenBSD__)
