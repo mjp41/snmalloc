@@ -63,22 +63,13 @@ extern "C"
     return Alloc::alloc_size(ptr);
   }
 
-  SNMALLOC_EXPORT void* SNMALLOC_NAME_MANGLE(realloc_sane)(void* ptr, size_t size)
-  {
-    size_t sz = Alloc::alloc_size(ptr);
-    auto alloc = ThreadAlloc::get_noncachable();
-    void* p = alloc->alloc(size);
-    if (p != nullptr)
-    {
-      SNMALLOC_ASSERT(p == Alloc::external_pointer<Start>(p));
-      memcpy(p, ptr, bits::min(size, sz));
-      alloc->dealloc(ptr, sz);
-    }
-    return p;
-  }
-
   SNMALLOC_EXPORT void* SNMALLOC_NAME_MANGLE(realloc)(void* ptr, size_t size)
   {
+    if (unlikely(size == (size_t)-1))
+    {
+      errno = ENOMEM;
+      return nullptr;
+    }
     if (unlikely(ptr == nullptr))
     {
       return SNMALLOC_NAME_MANGLE(malloc)(size);
@@ -98,10 +89,8 @@ extern "C"
     }
 #endif
     // Keep the current allocation if the given size is in the same sizeclass.
-    if (Alloc::has_size(ptr, size))
-      return ptr;
-    
-    return SNMALLOC_NAME_MANGLE(realloc_sane)(ptr, size);
+    auto alloc = ThreadAlloc::get_noncachable();
+    return alloc->realloc(ptr, size);
   }
 
 #if !defined(__FreeBSD__) && !defined(__OpenBSD__)

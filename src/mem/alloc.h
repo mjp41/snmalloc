@@ -493,7 +493,7 @@ namespace snmalloc
       return alloc_size_error();
     }
 
-    SNMALLOC_FAST_PATH static size_t has_size(const void* p, size_t comp_size)
+    SNMALLOC_FAST_PATH void* realloc(void* p, size_t comp_size)
     {
       // This must be called on an external pointer.
       size_t size = ChunkMap::get(address_cast(p));
@@ -507,8 +507,19 @@ namespace snmalloc
         Slab* slab = Metaslab::get_slab(p);
         Metaslab& meta = super->get_meta(slab);
         sizeclass_t sc = meta.sizeclass;
-        return (comp_size <= sizeclass_to_size(sc)) 
-          && ((sc == 0) || (comp_size > sizeclass_to_size(sc - 1)));
+        if ((comp_size > sizeclass_to_size(sc)) 
+          || ((sc != 0) && (comp_size <= sizeclass_to_size(sc - 1))))
+        {
+          auto n = alloc(comp_size);
+          n = memcpy(n, p, bits::min(comp_size, sizeclass_to_size(sc)));
+          RemoteAllocator* target = super->get_allocator();
+          if (likely(target == public_state()))
+            small_dealloc(super, p, sc);
+          else
+            remote_dealloc(target, p, sc);
+          return n;
+        }
+        return p;
       }
 
       if (likely(size == CMMediumslab))
@@ -517,11 +528,29 @@ namespace snmalloc
         sizeclass_t sc = slab->get_sizeclass();
         // Reading a remote sizeclass won't fail, since the other allocator
         // can't reuse the slab, as we have no yet deallocated this pointer.
-        return (comp_size <= sizeclass_to_size(sc)) 
-          && (comp_size > sizeclass_to_size(sc - 1));
+        if ((comp_size > sizeclass_to_size(sc)) 
+          || (comp_size <= sizeclass_to_size(sc - 1)))
+        {
+          auto n = alloc(comp_size);
+          n = memcpy(n, p, bits::min(comp_size, sizeclass_to_size(sc)));
+          RemoteAllocator* target = slab->get_allocator();
+          if (likely(target == public_state()))
+            medium_dealloc(slab, p, sc);
+          else
+            remote_dealloc(target, p, sc);
+          return n;
+        }
+        return p;
       }
 
-      return (comp_size <= (1ULL << size)) && (comp_size > (1ULL << (size - 1)));
+      if ((comp_size > (1ULL << size)) || (comp_size <= (1ULL << (size - 1))))
+      {
+        auto n = alloc(comp_size);
+        n = memcpy(n, p, bits::min<size_t>(comp_size, 1ULL << size));
+        large_dealloc_inited(p, 1ULL << size);
+        return n;
+      }
+      return p;
     }
 
     size_t get_id()
@@ -1472,6 +1501,11 @@ namespace snmalloc
         return;
       }
 
+      large_dealloc_inited(p, size);
+    }
+
+    void large_dealloc_inited(void* p, size_t size)
+    {
       size_t size_bits = bits::next_pow2_bits(size);
       SNMALLOC_ASSERT(bits::one_at_bit(size_bits) >= SUPERSLAB_SIZE);
       size_t large_class = size_bits - SUPERSLAB_BITS;
