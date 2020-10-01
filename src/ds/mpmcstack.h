@@ -1,6 +1,7 @@
 #pragma once
 
 #include "aba.h"
+#include "flaglock.h"
 
 namespace snmalloc
 {
@@ -24,6 +25,9 @@ namespace snmalloc
 
     void push(T* first, T* last)
     {
+      static MiniStat stat("MPMC Push");
+      MiniStat::Measure a(stat);
+
       // Pushes an item on the stack.
       auto cmp = stack.read();
 
@@ -36,6 +40,9 @@ namespace snmalloc
 
     T* pop()
     {
+      static MiniStat stat("MPMC Pop");
+      MiniStat::Measure a(stat);
+
       // Returns the next item. If the returned value is decommitted, it is
       // possible for the read of top->next to segfault.
       auto cmp = stack.read();
