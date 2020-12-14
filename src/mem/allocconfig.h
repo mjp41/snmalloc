@@ -119,7 +119,7 @@ namespace snmalloc
   static_assert((1ULL << SUPERSLAB_BITS) == SUPERSLAB_SIZE, "Sanity check");
 
   // Number of slots for remote deallocation.
-  static constexpr size_t REMOTE_SLOT_BITS = 6;
+  static constexpr size_t REMOTE_SLOT_BITS = 9;
   static constexpr size_t REMOTE_SLOTS = 1 << REMOTE_SLOT_BITS;
   static constexpr size_t REMOTE_MASK = REMOTE_SLOTS - 1;
 
