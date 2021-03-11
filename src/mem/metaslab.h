@@ -114,6 +114,19 @@ namespace snmalloc
 #endif
     }
 
+    inline static uintptr_t key;
+
+    static uintptr_t encode_next(uintptr_t prev, uintptr_t next)
+    {
+        // Build encoding based on previous
+        auto pkey = prev * key;
+        // Only encode using the bottom bits of next
+        // where the pkey does not have any bits set.
+        auto sym = (next & 0xFFFF) * pkey; 
+        // XOR so enc and dec are the same
+        return sym ^ next;
+    }
+
     /// Accessor function for the next pointer in a block.
     /// In Debug checks for simple corruptions.
     static SNMALLOC_FAST_PATH void* follow_next(void* node)
@@ -127,7 +140,8 @@ namespace snmalloc
           error("Detected memory corruption.  Use-after-free.");
       }
 #endif
-      return *static_cast<void**>(node);
+
+      return (void*)encode_next((uintptr_t)node, (uintptr_t)*static_cast<void**>(node));
     }
 
     bool valid_head()
