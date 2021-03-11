@@ -119,11 +119,17 @@ namespace snmalloc
 
     static uintptr_t encode_next(uintptr_t prev, uintptr_t next)
     {
-      auto top = next >> 32;
-      auto bottom = (top * key2) & 0xffff'ffff;
-      next ^= bottom;
-      next ^= (next & 0xffff'ffff) * key;
-      next ^= (prev * key2);
+      constexpr uintptr_t MASK = 0xffffffff;
+      uintptr_t f1;
+      // Mix in prev.
+      next ^= prev * key2;
+      // Round 1.
+      f1 = ((next & MASK) * key2) & MASK;
+      next = f1 ^ bits::rotl(next, 32);
+      // Round 2.
+      f1 = ((next & MASK) * key2) & MASK;
+      next = f1 ^ bits::rotl(next, 32);
+      next = bits::rotl(next, 32);
       return next;
     }
 
