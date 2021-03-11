@@ -115,16 +115,16 @@ namespace snmalloc
     }
 
     inline static uintptr_t key;
+    inline static uintptr_t key2;
 
     static uintptr_t encode_next(uintptr_t prev, uintptr_t next)
     {
-        // Build encoding based on previous
-        auto pkey = prev * key;
-        // Only encode using the bottom bits of next
-        // where the pkey does not have any bits set.
-        auto sym = (next & 0xFFFF) * pkey; 
-        // XOR so enc and dec are the same
-        return sym ^ next;
+      auto top = next >> 32;
+      auto bottom = (top * key2) & 0xffff'ffff;
+      next ^= bottom;
+      next ^= (next & 0xffff'ffff) * key;
+      next ^= (prev * key2);
+      return next;
     }
 
     /// Accessor function for the next pointer in a block.
