@@ -129,7 +129,7 @@ namespace snmalloc
       // Round 2.
       f1 = ((next & MASK) * key2) >> 32;
       next = f1 ^ bits::rotl(next, 32);
-      next = bits::rotl(next, 32);
+//      next = bits::rotl(next, 32);
       return next;
     }
 
