@@ -124,10 +124,10 @@ namespace snmalloc
       // Mix in prev.
       next ^= prev * key2;
       // Round 1.
-      f1 = ((next & MASK) * key2) & MASK;
+      f1 = ((next & MASK) * key2) >> 32;
       next = f1 ^ bits::rotl(next, 32);
       // Round 2.
-      f1 = ((next & MASK) * key2) & MASK;
+      f1 = ((next & MASK) * key2) >> 32;
       next = f1 ^ bits::rotl(next, 32);
       next = bits::rotl(next, 32);
       return next;
