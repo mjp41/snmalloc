@@ -13,6 +13,7 @@ namespace snmalloc
   {
     // Use a value with bottom bit set for empty list.
     void* value = nullptr;
+    void* prev = nullptr;
   };
 
   using SlabList = CDLLNode;
@@ -21,6 +22,11 @@ namespace snmalloc
   SNMALLOC_FAST_PATH Slab* get_slab(SlabLink* sl)
   {
     return pointer_align_down<SLAB_SIZE, Slab>(sl);
+  }
+
+  SNMALLOC_FAST_PATH void* fake_prev(void* p)
+  {
+    return pointer_align_down<SLAB_SIZE, void>(p);
   }
 
   static_assert(
@@ -38,6 +44,12 @@ namespace snmalloc
      *  The list will be (allocated - needed) long.
      */
     void* head = nullptr;
+
+    // Form a queue
+    void* end = nullptr;
+    void* prev = nullptr;
+    void* dummy;
+    void* dummy2;
 
     /**
      *  How many entries are not in the free list of slab, i.e.
@@ -97,31 +109,36 @@ namespace snmalloc
 
     /// Store next pointer in a block. In Debug using magic value to detect some
     /// simple corruptions.
-    static SNMALLOC_FAST_PATH void store_next(void* p, void* head)
+    static SNMALLOC_FAST_PATH void store_next(void* key, void* p, void* next)
     {
-      *static_cast<void**>(p) = head;
-#if defined(CHECK_CLIENT)
+      *static_cast<void**>(p) =
+        (void*)encode_next((uintptr_t)key, (uintptr_t)next);
+    }
+
+    inline static uintptr_t global_key = 0x9999'9999'9999'9999;
+    static void* initial_key(void* p)
+    {
+      return (void*)(((uintptr_t)p) + SUPERSLAB_SIZE);
+    }
+
+    static uintptr_t encode_next(uintptr_t local_key, uintptr_t next)
+    {
       if constexpr (aal_supports<IntegerPointers>)
       {
-        *(static_cast<uintptr_t*>(p) + 1) = address_cast(head) ^ POISON;
+        constexpr uintptr_t MASK = bits::one_at_bit(bits::BITS / 2) - 1;
+        // Mix in local_key
+        auto key = local_key ^ global_key;
+        next ^= (((next&MASK) + 1) * key) & ~MASK;
       }
-#endif
+      return next;
     }
 
     /// Accessor function for the next pointer in a block.
     /// In Debug checks for simple corruptions.
-    static SNMALLOC_FAST_PATH void* follow_next(void* node)
+    static SNMALLOC_FAST_PATH void* follow_next(void* prev, void* node)
     {
-#if defined(CHECK_CLIENT)
-      if constexpr (aal_supports<IntegerPointers>)
-      {
-        uintptr_t next = *static_cast<uintptr_t*>(node);
-        uintptr_t chk = *(static_cast<uintptr_t*>(node) + 1);
-        if ((next ^ chk) != POISON)
-          error("Detected memory corruption.  Use-after-free.");
-      }
-#endif
-      return *static_cast<void**>(node);
+      return (void*)encode_next(
+        (uintptr_t)prev, (uintptr_t) * static_cast<void**>(node));
     }
 
     bool valid_head()
@@ -168,8 +185,12 @@ namespace snmalloc
       // Use first element as the allocation
       void* p = head;
       // Put the rest in allocators small_class fast free list.
-      fast_free_list.value = Metaslab::follow_next(p);
+      fast_free_list.value = Metaslab::follow_next(nullptr, p);
+      fast_free_list.prev = p;
       head = nullptr;
+
+      // Terminate queue
+      Metaslab::store_next(prev, end, nullptr);
 
       // Treat stealing the free list as allocating it all.
       needed = allocated;
@@ -196,48 +217,6 @@ namespace snmalloc
       return p;
     }
 
-    /**
-     * Check bump-free-list-segment for cycles
-     *
-     * Using
-     * https://en.wikipedia.org/wiki/Cycle_detection#Floyd's_Tortoise_and_Hare
-     * We don't expect a cycle, so worst case is only followed by a crash, so
-     * slow doesn't mater.
-     */
-    size_t debug_slab_acyclic_free_list(Slab* slab)
-    {
-#ifndef NDEBUG
-      size_t length = 0;
-      void* curr = head;
-      void* curr_slow = head;
-      bool both = false;
-      while (curr != nullptr)
-      {
-        if (get_slab(curr) != slab)
-        {
-          error("Free list corruption, not correct slab.");
-        }
-        curr = follow_next(curr);
-        if (both)
-        {
-          curr_slow = follow_next(curr_slow);
-        }
-
-        if (curr == curr_slow)
-        {
-          error("Free list contains a cycle, typically indicates double free.");
-        }
-
-        both = !both;
-        length++;
-      }
-      return length;
-#else
-      UNUSED(slab);
-      return 0;
-#endif
-    }
-
     void debug_slab_invariant(Slab* slab)
     {
 #if !defined(NDEBUG) && !defined(SNMALLOC_CHEAP_CHECKS)
@@ -259,13 +238,10 @@ namespace snmalloc
       // Block is not full
       SNMALLOC_ASSERT(SLAB_SIZE > accounted_for);
 
-      // Keep variable so it appears in debugger.
-      size_t length = debug_slab_acyclic_free_list(slab);
-      UNUSED(length);
-
       // Walk bump-free-list-segment accounting for unused space
       void* curr = head;
-      while (curr != nullptr)
+      void* prev = nullptr;
+      while (prev != end)
       {
         // Check we are looking at a correctly aligned block
         void* start = remove_cache_friendly_offset(curr, sizeclass);
@@ -276,7 +252,9 @@ namespace snmalloc
         SNMALLOC_ASSERT(SLAB_SIZE >= accounted_for);
 
         // Iterate bump/free list segment
-        curr = follow_next(curr);
+        auto next = follow_next(prev, curr);
+        prev = curr;
+        curr = next;
       }
 
       auto bumpptr = (allocated * size) + offset;

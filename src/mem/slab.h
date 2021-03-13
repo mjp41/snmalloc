@@ -30,6 +30,7 @@ namespace snmalloc
     alloc_new_list(void*& bumpptr, FreeListHead& fast_free_list, size_t rsize)
     {
       fast_free_list.value = bumpptr;
+      fast_free_list.prev = Metaslab::initial_key(bumpptr);;
       void* newbumpptr = pointer_offset(bumpptr, rsize);
       void* slab_end = pointer_align_up<SLAB_SIZE>(newbumpptr);
       void* slab_end2 =
@@ -37,14 +38,16 @@ namespace snmalloc
       if (slab_end2 < slab_end)
         slab_end = slab_end2;
 
+      void* prev = fast_free_list.prev;
       while (newbumpptr < slab_end)
       {
-        Metaslab::store_next(bumpptr, newbumpptr);
+        Metaslab::store_next(prev, bumpptr, newbumpptr);
+        prev = bumpptr;
         bumpptr = newbumpptr;
         newbumpptr = pointer_offset(bumpptr, rsize);
       }
 
-      Metaslab::store_next(bumpptr, nullptr);
+      Metaslab::store_next(prev, bumpptr, nullptr);
       bumpptr = newbumpptr;
     }
 
@@ -63,14 +66,16 @@ namespace snmalloc
         return false;
 
       // Update the head and the next pointer in the free list.
-      void* head = meta.head;
+      void* last = meta.end;
+      void* prev = meta.prev;
 
-      // Set the head to the memory being deallocated.
-      meta.head = p;
+      // Set the last element to point to the new element.
+      Metaslab::store_next(prev, last, p);
+
+      // Set the end to the memory being deallocated.
+      meta.end = p;
+      meta.prev = last;
       SNMALLOC_ASSERT(meta.valid_head());
-
-      // Set the next pointer to the previous head.
-      Metaslab::store_next(p, head);
 
       return true;
     }
@@ -98,7 +103,9 @@ namespace snmalloc
         }
         SNMALLOC_ASSERT(meta.head == nullptr);
         meta.head = p;
-        Metaslab::store_next(p, nullptr);
+        meta.end = p;
+        meta.prev = Metaslab::initial_key(p);
+        Metaslab::store_next(Metaslab::initial_key(p), p, nullptr);
         meta.needed = meta.allocated - 1;
 
         // Push on the list of slabs for this sizeclass.

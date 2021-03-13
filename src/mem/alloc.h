@@ -743,31 +743,34 @@ namespace snmalloc
         while (pointer_align_up(bp, SLAB_SIZE) != bp)
         {
           Slab::alloc_new_list(bp, ffl, rsize);
-          void* prev = ffl.value;
-          while (prev != nullptr)
+          void* curr = ffl.value;
+          void* prev = ffl.prev;
+          while (curr != nullptr)
           {
-            auto n = Metaslab::follow_next(prev);
-            Superslab* super = Superslab::get(prev);
-            Slab* slab = Metaslab::get_slab(prev);
-            small_dealloc_offseted_inner(super, slab, prev, i);
-            prev = n;
+            auto n = Metaslab::follow_next(prev, curr);
+            Superslab* super = Superslab::get(curr);
+            Slab* slab = Metaslab::get_slab(curr);
+            small_dealloc_offseted_inner(super, slab, curr, i);
+            prev = curr;
+            curr = n;
           }
         }
       }
 
       for (size_t i = 0; i < NUM_SMALL_CLASSES; i++)
       {
-        auto prev = small_fast_free_lists[i].value;
+        auto curr = small_fast_free_lists[i].value;
+        auto prev = small_fast_free_lists[i].prev;
         small_fast_free_lists[i].value = nullptr;
-        while (prev != nullptr)
+        while (curr != nullptr)
         {
-          auto n = Metaslab::follow_next(prev);
+          auto n = Metaslab::follow_next(prev, curr);
 
-          Superslab* super = Superslab::get(prev);
-          Slab* slab = Metaslab::get_slab(prev);
-          small_dealloc_offseted_inner(super, slab, prev, i);
-
-          prev = n;
+          Superslab* super = Superslab::get(curr);
+          Slab* slab = Metaslab::get_slab(curr);
+          small_dealloc_offseted_inner(super, slab, curr, i);
+          prev = curr;
+          curr = n;
         }
 
         test(small_classes[i]);
@@ -1032,9 +1035,14 @@ namespace snmalloc
       {
         stats().alloc_request(size);
         stats().sizeclass_alloc(sizeclass);
+        auto prev = fl.prev;
+        if (unlikely(((address_cast(prev) ^ address_cast(head)) >= SLAB_SIZE)))
+        {
+          error("Heap corruption detected!");
+        }
+        fl.prev = head;
         // Read the next slot from the memory that's about to be allocated.
-        fl.value = Metaslab::follow_next(head);
-
+        fl.value = Metaslab::follow_next(prev, head);
         void* p = remove_cache_friendly_offset(head, sizeclass);
         if constexpr (zero_mem == YesZero)
         {
@@ -1148,8 +1156,11 @@ namespace snmalloc
       SNMALLOC_ASSERT(ffl.value == nullptr);
       Slab::alloc_new_list(bp, ffl, rsize);
 
-      void* p = remove_cache_friendly_offset(ffl.value, sizeclass);
-      ffl.value = Metaslab::follow_next(p);
+      void* p = ffl.value;
+      ffl.value = Metaslab::follow_next(ffl.prev, ffl.value);
+      ffl.prev = p;
+
+      p = remove_cache_friendly_offset(p, sizeclass);
 
       if constexpr (zero_mem == YesZero)
       {
