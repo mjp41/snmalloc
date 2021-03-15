@@ -1,5 +1,4 @@
 #pragma once
-
 #include "superslab.h"
 
 namespace snmalloc
@@ -29,26 +28,41 @@ namespace snmalloc
     static SNMALLOC_FAST_PATH void
     alloc_new_list(void*& bumpptr, FreeListHead& fast_free_list, size_t rsize)
     {
-      fast_free_list.value = bumpptr;
-      fast_free_list.prev = Metaslab::initial_key(bumpptr);;
-      void* newbumpptr = pointer_offset(bumpptr, rsize);
-      void* slab_end = pointer_align_up<SLAB_SIZE>(newbumpptr);
-      void* slab_end2 =
-        pointer_align_up<OS_PAGE_SIZE>(pointer_offset(bumpptr, rsize * 32));
-      if (slab_end2 < slab_end)
-        slab_end = slab_end2;
+      void* slab_end = pointer_align_up<SLAB_SIZE>(pointer_offset(bumpptr, rsize));
 
-      void* prev = fast_free_list.prev;
-      while (newbumpptr < slab_end)
+      void* prev;
+      void* currobject = nullptr;
+      auto push = [&](void* next)
       {
-        Metaslab::store_next(prev, bumpptr, newbumpptr);
-        prev = bumpptr;
-        bumpptr = newbumpptr;
-        newbumpptr = pointer_offset(bumpptr, rsize);
-      }
+        if (currobject == nullptr)
+        {
+          fast_free_list.value = next;
+          prev = Metaslab::initial_key(next);
+          fast_free_list.prev = prev;
+        }
+        else
+        {
+          Metaslab::store_next(prev, currobject, next);
+          prev = currobject;
+        }
+        currobject = next;
+      };
 
-      Metaslab::store_next(prev, bumpptr, nullptr);
-      bumpptr = newbumpptr;
+      auto finalbumpptr = bumpptr;
+      size_t start_index[7] = {3, 5, 0, 2, 4, 1, 6};
+      for (int i = 0; i < 7; i++)
+      {
+        void* newbumpptr = pointer_offset(bumpptr, rsize * start_index[i]);
+        while (pointer_offset(newbumpptr, rsize) <= slab_end)
+        {
+          push(newbumpptr);
+          newbumpptr = pointer_offset(newbumpptr, rsize * 7);
+        }
+        finalbumpptr = bits::max(finalbumpptr, pointer_offset(currobject, rsize));
+      }
+      bumpptr = finalbumpptr;
+
+      push(nullptr);
     }
 
     // Returns true, if it deallocation can proceed without changing any status
