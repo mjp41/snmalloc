@@ -128,6 +128,20 @@ namespace snmalloc
         return Superslab::NoSlabReturn;
       }
 
+      // Check free list is well-formed.
+      auto prev = Metaslab::initial_key(meta.head);
+      auto curr = meta.head;
+      while (curr != nullptr)
+      {
+        if (unlikely(((address_cast(prev) ^ address_cast(curr)) >= SLAB_SIZE)))
+        {
+          error("Heap corruption detected!");
+        }
+        auto next = Metaslab::follow_next(prev, curr);
+        prev = curr;
+        curr = next;
+      }
+
       // Remove from the sizeclass list and dealloc on the superslab.
       meta.remove();
 
