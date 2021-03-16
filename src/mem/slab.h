@@ -119,7 +119,6 @@ namespace snmalloc
         meta.head = p;
         meta.end = p;
         meta.prev = Metaslab::initial_key(p);
-        Metaslab::store_next(Metaslab::initial_key(p), p, nullptr);
         meta.needed = meta.allocated - 1;
 
         // Push on the list of slabs for this sizeclass.
@@ -128,10 +127,11 @@ namespace snmalloc
         return Superslab::NoSlabReturn;
       }
 
+      size_t count = 1;
       // Check free list is well-formed.
       auto prev = Metaslab::initial_key(meta.head);
       auto curr = meta.head;
-      while (curr != nullptr)
+      while (curr != meta.end)
       {
         if (unlikely(((address_cast(prev) ^ address_cast(curr)) >= SLAB_SIZE)))
         {
@@ -140,6 +140,7 @@ namespace snmalloc
         auto next = Metaslab::follow_next(prev, curr);
         prev = curr;
         curr = next;
+        count++;
       }
 
       // Remove from the sizeclass list and dealloc on the superslab.

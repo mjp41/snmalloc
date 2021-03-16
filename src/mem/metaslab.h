@@ -118,7 +118,7 @@ namespace snmalloc
     inline static uintptr_t global_key = 0x9999'9999'9999'9999;
     static void* initial_key(void* p)
     {
-      return (void*)(((uintptr_t)p) + SUPERSLAB_SIZE);
+      return (void*)(((uintptr_t)p) + 15);
     }
 
     static uintptr_t encode_next(uintptr_t local_key, uintptr_t next)
@@ -182,15 +182,23 @@ namespace snmalloc
       auto slab = get_slab(head);
       debug_slab_invariant(slab);
 
-      // Use first element as the allocation
-      void* p = head;
-      // Put the rest in allocators small_class fast free list.
-      fast_free_list.value = Metaslab::follow_next(nullptr, p);
-      fast_free_list.prev = p;
-      head = nullptr;
-
       // Terminate queue
       Metaslab::store_next(prev, end, nullptr);
+
+      // Use first element as the allocation
+      void* p = head;
+      void* n = Metaslab::follow_next(Metaslab::initial_key(p), p);
+
+      if (n != nullptr && 
+        unlikely(((address_cast(p) ^ address_cast(n)) >= SLAB_SIZE)))
+      {
+        error("Heap corruption detected!");
+      }
+
+      // Put the rest in allocators small_class fast free list.
+      fast_free_list.value = n;
+      fast_free_list.prev = p;
+      head = nullptr;
 
       // Treat stealing the free list as allocating it all.
       needed = allocated;
@@ -240,7 +248,7 @@ namespace snmalloc
 
       // Walk bump-free-list-segment accounting for unused space
       void* curr = head;
-      void* prev = nullptr;
+      void* prev = Metaslab::initial_key(curr);
       while (prev != end)
       {
         // Check we are looking at a correctly aligned block
@@ -250,6 +258,11 @@ namespace snmalloc
         // Account for free elements in free list
         accounted_for += size;
         SNMALLOC_ASSERT(SLAB_SIZE >= accounted_for);
+
+        if (unlikely(((address_cast(prev) ^ address_cast(curr)) >= SLAB_SIZE)))
+        {
+          error("Heap corruption detected!");
+        }
 
         // Iterate bump/free list segment
         auto next = follow_next(prev, curr);
