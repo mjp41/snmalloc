@@ -102,10 +102,9 @@ namespace snmalloc
 #  ifndef NDEBUG
       if (next != nullptr)
       {
-        if (unlikely(different_slab(prev, next)))
-        {
-          error("Heap corruption - free list corrupted!");
-        }
+        check_client(
+          !different_slab(prev, next),
+          "Heap corruption - free list corrupted!");
       }
 #  endif
       prev = address_cast(curr);
@@ -122,10 +121,8 @@ namespace snmalloc
     void move_next()
     {
 #ifdef CHECK_CLIENT
-      if (unlikely(different_slab(prev, curr)))
-      {
-        error("Heap corruption - free list corrupted!");
-      }
+      check_client(
+        !different_slab(prev, curr), "Heap corruption - free list corrupted!");
 #endif
       update_cursor(curr->read_next(get_prev()));
     }
