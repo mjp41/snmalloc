@@ -77,7 +77,10 @@ namespace test
         void* interior_ptr = pointer_offset(external_ptr, offset);
         void* calced_external = alloc->external_pointer(interior_ptr);
         if (calced_external != external_ptr)
+        {
+          std::cout << "Calced: " << calced_external << "  Actual: " << external_ptr << std::endl;
           abort();
+        }
       }
     }
 

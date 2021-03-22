@@ -48,6 +48,8 @@ namespace snmalloc
     // Initially zero to encode the superslabs relative list of slabs.
     uint8_t next = 0;
 
+
+
     /**
      * Updates statistics for adding an entry to the free list, if the
      * slab is either
@@ -118,7 +120,7 @@ namespace snmalloc
 
       // Treat stealing the free list as allocating it all.
       self->needed =
-        get_slab_capacity(self->sizeclass, Metaslab::is_short(slab));
+        get_slab_capacity(self->sizeclass, Metaslab::is_short(Metaslab::get_slab(n)));
       self->remove();
       self->set_full();
 

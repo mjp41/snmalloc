@@ -76,7 +76,8 @@ namespace snmalloc
     /**
      * Align the elements, so that access is cheaper.
      */
-    struct alignas(bits::next_pow2_const(sizeof(T))) TWrap
+    struct alignas(bits::next_pow2_const(sizeof(T))) 
+    TWrap
     {
       T v;
     };

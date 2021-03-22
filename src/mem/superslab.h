@@ -5,7 +5,6 @@
 #include "metaslab.h"
 
 #include <new>
-#include <iostream>
 
 namespace snmalloc
 {

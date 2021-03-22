@@ -22,7 +22,7 @@ namespace snmalloc
    * This should be randomised at startup in the future.
    */
   inline static address_t global_key = static_cast<std::size_t>(
-    bits::is64() ? 0x9999'9999'9999'9999 : 0x9999'9999);
+    bits::is64() ? 0x5a59'DEAD'BEEF'5A59 : 0x5A59'BEEF);
 #endif
 
   /**
@@ -86,7 +86,7 @@ namespace snmalloc
         // We shift local key to the critical bits have more effect on the high
         // bits.
         address_t lk = local_key;
-        auto key = (lk << PRESERVE_BOTTOM_BITS) ^ global_key;
+        auto key = (lk << PRESERVE_BOTTOM_BITS) + global_key;
         next ^= (((next & MASK) + 1) * key) & ~MASK;
         next_object = reinterpret_cast<FreeObject*>(next);
       }
@@ -234,18 +234,30 @@ namespace snmalloc
    */
   class FreeListBuilder
   {
-    EncodeFreeObjectReference head;
-    EncodeFreeObjectReference* end;
+    EncodeFreeObjectReference head[2];
+    EncodeFreeObjectReference* end[2];
 #ifdef CHECK_CLIENT
-    uint16_t prev;
-    uint16_t curr;
+    uint16_t prev[2];
+    uint16_t curr[2];
 #endif
+    uint32_t interleave;
 
-    uint16_t get_prev()
+    uint16_t get_prev(uint32_t index)
     {
 #ifdef CHECK_CLIENT
-      return prev;
+      return prev[index];
 #else
+      UNUSED(index);
+      return 0;
+#endif
+    }
+
+    uint16_t get_curr(uint32_t index)
+    {
+#ifdef CHECK_CLIENT
+      return curr[index];
+#else
+      UNUSED(index);
       return 0;
 #endif
     }
@@ -253,28 +265,30 @@ namespace snmalloc
     static constexpr uint16_t HEAD_KEY = 1;
 
   public:
+    FreeListBuilder()
+    {
+      init();
+    }
+
     /**
      * Start building a new free list.
      * Provide pointer to the slab to initialise the system.
      */
     void open(void* p)
     {
+      interleave = 0xDEADBEEF;
+
       SNMALLOC_ASSERT(empty());
 #ifdef CHECK_CLIENT
-      prev = HEAD_KEY;
-      curr = initial_key(p) & 0xffff;
+      prev[0] = HEAD_KEY;
+      curr[0] = initial_key(p) & 0xffff;
+      prev[1] = HEAD_KEY;
+      curr[1] = initial_key(p) & 0xffff;
 #else
       UNUSED(p);
 #endif
-      end = &head;
-    }
-
-    /**
-     * Returns current head without affecting the builder.
-     */
-    void* peek_head()
-    {
-      return head.read(HEAD_KEY);
+      end[0] = &head[0];
+      end[1] = &head[1];
     }
 
     /**
@@ -282,7 +296,14 @@ namespace snmalloc
      */
     bool empty()
     {
-      return end == &head;
+      return end[0] == &head[0]
+        && end[1] == &head[1];
+    }
+
+    void next_interleave()
+    {
+      uint32_t bottom_bit = interleave & 1;
+      interleave = (bottom_bit << 31) | (interleave >> 1);
     }
 
     /**
@@ -290,13 +311,21 @@ namespace snmalloc
      */
     void add(void* n)
     {
-      SNMALLOC_ASSERT(!different_slab(end, n) || empty());
+      SNMALLOC_ASSERT(
+          !different_slab(end[0], n) ||
+          !different_slab(end[1], n) ||
+          empty());
       FreeObject* next = FreeObject::make(n);
-      end->store(next, get_prev());
-      end = &(next->next_object);
+      
+      next_interleave();
+      // Use 4th bit as size of smallest interesting field.
+      uint32_t index = (interleave & 4U) >> 2;
+
+      end[index]->store(next, get_prev(index));
+      end[index] = &(next->next_object);
 #ifdef CHECK_CLIENT
-      prev = curr;
-      curr = address_cast(next) & 0xffff;
+      prev[index] = curr[index];
+      curr[index] = address_cast(next) & 0xffff;
 #endif
     }
 
@@ -309,12 +338,49 @@ namespace snmalloc
      * This is used to iterate an list that is being constructed.
      * It is currently only used to check invariants in Debug builds.
      */
-    FreeListIter terminate()
+    FreeListIter terminate(bool preserve_queue = true)
     {
-      if (!empty())
-        end->store(nullptr, get_prev());
-      // Build prev
-      auto h = head.read(HEAD_KEY);
+      SNMALLOC_ASSERT(end[1] != &head[0]);
+      SNMALLOC_ASSERT(end[0] != &head[1]);
+
+      // If second list is empty, then append is trivial.
+      if (end[1] == &head[1])
+      {
+        end[0]->store(nullptr, get_prev(0));
+        return {head[0].read(HEAD_KEY)};
+      }
+
+      end[1]->store(nullptr, get_prev(1));
+
+      // Append 1 to 0
+      auto mid = head[1].read(HEAD_KEY);
+      end[0]->store(mid, get_prev(0));
+      // Re-code first link in second list (if there is one).
+      if (mid != nullptr)
+      {
+        auto mid_next = mid->read_next(initial_key(mid) & 0xffff);
+        mid->next_object.store(mid_next, get_curr(0));
+      }
+
+      auto h = head[0].read(HEAD_KEY);
+
+      if (preserve_queue && h != nullptr)
+      {
+#ifdef CHECK_CLIENT
+        prev[0] = prev[1];
+        curr[0] = curr[1];
+#endif
+        end[0] = end[1];
+#ifdef CHECK_CLIENT
+        prev[1] = HEAD_KEY;
+        curr[1] = initial_key(h) & 0xffff;
+#endif
+        end[1] = &(head[1]);
+      }
+
+      SNMALLOC_ASSERT(end[1] != &head[0]);
+      SNMALLOC_ASSERT(end[0] != &head[1]);
+
       return {h};
     }
 
@@ -324,7 +390,7 @@ namespace snmalloc
      */
     void close(FreeListIter& dst)
     {
-      dst = terminate();
+      dst = terminate(false);
       init();
     }
 
@@ -333,7 +399,8 @@ namespace snmalloc
      */
     void init()
     {
-      end = &head;
+      end[0] = &head[0];
+      end[1] = &head[1];
     }
   };
 } // namespace snmalloc
