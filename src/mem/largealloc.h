@@ -39,7 +39,14 @@ namespace snmalloc
     {
       kind = Large;
     }
+
+    void unprotect()
+    {
+      pre_guard.unprotect();
+    }
   };
+
+  static constexpr size_t LARGESLAB_COMMITTED = bits::align_up(sizeof(Largeslab), OS_PAGE_SIZE);
 
   /**
    * A slab that has been decommitted.  The first page remains committed and
@@ -212,7 +219,7 @@ namespace snmalloc
           break;
         }
         size_t rsize = bits::one_at_bit(SUPERSLAB_BITS) << large_class;
-        size_t decommit_size = rsize - OS_PAGE_SIZE;
+        size_t decommit_size = rsize - LARGESLAB_COMMITTED;
         // Grab all of the chunks of this size class.
         CapPtr<Largeslab, CBChunk> slab = large_stack[large_class].pop_all();
         while (slab != nullptr)
@@ -222,7 +229,7 @@ namespace snmalloc
           if (slab->get_kind() != Decommitted)
           {
             PAL::notify_not_using(
-              pointer_offset(slab.unsafe_capptr, OS_PAGE_SIZE), decommit_size);
+              pointer_offset(slab.unsafe_capptr, LARGESLAB_COMMITTED), decommit_size);
           }
           // Once we've removed these from the stack, there will be no
           // concurrent accesses and removal should have established a
@@ -357,21 +364,26 @@ namespace snmalloc
           // The first page is already in "use" for the stack element,
           // this will need zeroing for a YesZero call.
           if constexpr (zero_mem == YesZero)
-            pal_zero<typename MemoryProvider::Pal, true>(p, OS_PAGE_SIZE);
-
+          {
+            p->unprotect();
+            pal_zero<typename MemoryProvider::Pal, true>(p, LARGESLAB_COMMITTED);
+          }
           // Notify we are using the rest of the allocation.
           // Passing zero_mem ensures the PAL provides zeroed pages if
           // required.
           MemoryProvider::Pal::template notify_using<zero_mem>(
-            pointer_offset(p.unsafe_capptr, OS_PAGE_SIZE),
-            rsize - OS_PAGE_SIZE);
+            pointer_offset(p.unsafe_capptr, LARGESLAB_COMMITTED),
+            rsize - LARGESLAB_COMMITTED);
         }
         else
         {
           // This is a superslab that has not been decommitted.
           if constexpr (zero_mem == YesZero)
+          {
+            p->unprotect();
             pal_zero<typename MemoryProvider::Pal, true>(
               p, bits::align_up(size, OS_PAGE_SIZE));
+          }
           else
             UNUSED(size);
         }
@@ -399,7 +411,7 @@ namespace snmalloc
         (large_class != 0 || decommit_strategy == DecommitSuper))
       {
         MemoryProvider::Pal::notify_not_using(
-          pointer_offset(p, OS_PAGE_SIZE).unsafe_capptr, rsize - OS_PAGE_SIZE);
+          pointer_offset(p, LARGESLAB_COMMITTED).unsafe_capptr, rsize - LARGESLAB_COMMITTED);
       }
 
       stats.superslab_push();

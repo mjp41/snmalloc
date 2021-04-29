@@ -5,6 +5,30 @@
 
 namespace snmalloc
 {
+  class GuardPage
+  {
+#ifndef SNMALLOC_USE_SMALL_CHUNKS
+    alignas(OS_PAGE_SIZE) char guards[OS_PAGE_SIZE];
+#endif
+
+  public:
+    void protect()
+    {
+#ifndef SNMALLOC_USE_SMALL_CHUNKS
+      //TODO just getting an idea on Linux.
+      mprotect(&guards, OS_PAGE_SIZE, PROT_NONE);
+#endif
+    }
+
+    void unprotect()
+    {
+#ifndef SNMALLOC_USE_SMALL_CHUNKS
+      //TODO just getting an idea on Linux.
+      mprotect(&guards, OS_PAGE_SIZE, PROT_READ | PROT_WRITE);
+#endif
+    }
+  };
+
   enum SlabKind
   {
     Fresh = 0,
@@ -21,6 +45,7 @@ namespace snmalloc
   class Baseslab
   {
   protected:
+    GuardPage pre_guard;
     SlabKind kind;
 
   public:

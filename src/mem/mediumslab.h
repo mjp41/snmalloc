@@ -31,9 +31,9 @@ namespace snmalloc
   public:
     static constexpr size_t header_size()
     {
-      static_assert(
-        sizeof(Mediumslab) < OS_PAGE_SIZE,
-        "Mediumslab header size must be less than the page size");
+      // static_assert(
+      //   sizeof(Mediumslab) < OS_PAGE_SIZE,
+      //   "Mediumslab header size must be less than the page size");
       static_assert(
         sizeof(Mediumslab) < SLAB_SIZE,
         "Mediumslab header size must be less than the slab size");
@@ -77,6 +77,8 @@ namespace snmalloc
 
       self->allocator = alloc;
       self->head = 0;
+
+      self->pre_guard.protect();
 
       // If this was previously a Mediumslab of the same sizeclass, don't
       // initialise the allocation stack.

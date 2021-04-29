@@ -1535,6 +1535,7 @@ namespace snmalloc
           sc->remove(CapPtr<Mediumslab, CBChunkE>(slab_bounded.unsafe_capptr));
         }
 
+        // TODO?
         chunkmap().clear_slab(slab_bounded);
         large_allocator.dealloc(
           slab_bounded.template as_reinterpret<Largeslab>(), 0);
@@ -1576,6 +1577,8 @@ namespace snmalloc
       if (likely(p != nullptr))
       {
         chunkmap().set_large_size(p, size);
+        // Disable guard
+        p->unprotect();
 
         stats().alloc_request(size);
         stats().large_alloc(large_class);
