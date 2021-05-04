@@ -22,9 +22,8 @@ namespace snmalloc
   {
   private:
     friend Pooled<T>;
-    template<SNMALLOC_CONCEPT(ConceptPAL) PAL, typename ArenaMap>
-    friend class MemoryProviderStateMixin;
-    friend SNMALLOC_DEFAULT_MEMORY_PROVIDER;
+    // Required so the private constructor can be called.
+    friend MemoryProvider;
 
     std::atomic_flag lock = ATOMIC_FLAG_INIT;
     MPMCStack<T, PreZeroed> stack;

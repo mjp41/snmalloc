@@ -14,9 +14,6 @@
 
 namespace snmalloc
 {
-  template<SNMALLOC_CONCEPT(ConceptPAL) PAL, typename ArenaMap>
-  class MemoryProviderStateMixin;
-
   class Largeslab : public Baseslab
   {
     // This is the view of a contiguous memory area when it is being kept
@@ -30,7 +27,10 @@ namespace snmalloc
       template<typename>
       typename AP>
     friend class MPMCStack;
-    template<SNMALLOC_CONCEPT(ConceptPAL) PAL, typename ArenaMap>
+    template<
+      SNMALLOC_CONCEPT(ConceptPAL) PAL,
+      typename ArenaMap,
+      void (*register_object_space)(address_t, size_t)>
     friend class MemoryProviderStateMixin;
     AtomicCapPtr<Largeslab, CBChunk> next = nullptr;
 
@@ -59,10 +59,24 @@ namespace snmalloc
     }
   };
 
+  /**
+   * Used for platforms that do not require a eager knowledge of
+   * when an area of memory can be used for allocations.
+   */
+  inline void dummy_register_object_space(address_t p, size_t s)
+  {
+    UNUSED(p);
+    UNUSED(s);
+  }
+
   // This represents the state that the large allcoator needs to add to the
   // global state of the allocator.  This is currently stored in the memory
   // provider, so we add this in.
-  template<SNMALLOC_CONCEPT(ConceptPAL) PAL, typename ArenaMap>
+  template<
+    SNMALLOC_CONCEPT(ConceptPAL) PAL,
+    typename ArenaMap,
+    void (*register_object_space)(address_t, size_t) =
+      dummy_register_object_space>
   class MemoryProviderStateMixin
   {
     /**
@@ -162,7 +176,7 @@ namespace snmalloc
       ASM local_asm{};
       ArenaMap local_am{};
 
-      // Allocate permanent storage for the allocator usung temporary allocator
+      // Allocate permanent storage for the allocator using temporary allocator
       MemoryProviderStateMixin* allocated =
         local_asm
           .template reserve_with_left_over<true>(
@@ -283,8 +297,10 @@ namespace snmalloc
     {
       size_t size = bits::one_at_bit(SUPERSLAB_BITS) << large_class;
       peak_memory_used_bytes += size;
-      return address_space.template reserve<committed>(size, arena_map)
-        .template as_static<Largeslab>();
+      auto p = address_space.template reserve<committed>(size, arena_map)
+                 .template as_static<Largeslab>();
+      register_object_space(address_cast(p), size);
+      return p;
     }
 
     /**
