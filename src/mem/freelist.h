@@ -70,7 +70,7 @@ namespace snmalloc
   class FreeObject
   {
     CapPtr<FreeObject, CBAlloc> next_object;
-#ifdef CHECK_CLIENT
+#ifdef SNMALLOC_CHECK_CLIENT
     // Encoded representation of a back pointer.
     // Hard to fake, and provides consistency on
     // the next pointers.
@@ -93,7 +93,7 @@ namespace snmalloc
     }
 
     /**
-     * Assign next_object and update its prev_encoded if CHECK_CLIENT.
+     * Assign next_object and update its prev_encoded if SNMALLOC_CHECK_CLIENT.
      *
      * Static so that it can be used on reference to a FreeObject.
      *
@@ -107,7 +107,7 @@ namespace snmalloc
       LocalEntropy& entropy)
     {
       *curr = next;
-#ifdef CHECK_CLIENT
+#ifdef SNMALLOC_CHECK_CLIENT
       next->prev_encoded =
         signed_prev(address_cast(curr), address_cast(next), entropy);
 #else
@@ -143,7 +143,7 @@ namespace snmalloc
   class FreeListIter
   {
     CapPtr<FreeObject, CBAlloc> curr{nullptr};
-#ifdef CHECK_CLIENT
+#ifdef SNMALLOC_CHECK_CLIENT
     address_t prev{0};
 #endif
 
@@ -152,7 +152,7 @@ namespace snmalloc
       CapPtr<FreeObject, CBAlloc> head, address_t prev_value)
     : curr(head)
     {
-#ifdef CHECK_CLIENT
+#ifdef SNMALLOC_CHECK_CLIENT
       prev = prev_value;
 #endif
       UNUSED(prev_value);
@@ -186,7 +186,7 @@ namespace snmalloc
 
       Aal::prefetch(next.unsafe_ptr());
       curr = next;
-#ifdef CHECK_CLIENT
+#ifdef SNMALLOC_CHECK_CLIENT
       c->check_prev(prev);
       prev = signed_prev(address_cast(c), address_cast(next), entropy);
 #else
@@ -200,7 +200,7 @@ namespace snmalloc
   /**
    * Used to build a free list in object space.
    *
-   * Adds signing of pointers in the CHECK_CLIENT mode
+   * Adds signing of pointers in the SNMALLOC_CHECK_CLIENT mode
    *
    * We use the template parameter, so that an enclosing
    * class can make use of the remaining bytes, which may not

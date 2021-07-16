@@ -9,7 +9,7 @@
 #include <array>
 #include <atomic>
 
-#ifdef CHECK_CLIENT
+#ifdef SNMALLOC_CHECK_CLIENT
 #  define SNMALLOC_DONT_CACHE_ALLOCATOR_PTR
 #endif
 

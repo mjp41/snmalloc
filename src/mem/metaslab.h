@@ -58,7 +58,7 @@ namespace snmalloc
      *
      *  Spare 32bits are used for the fields in MetaslabEnd.
      */
-#ifdef CHECK_CLIENT
+#ifdef SNMALLOC_CHECK_CLIENT
     FreeListBuilder<true, MetaslabEnd> free_queue;
 #else
     FreeListBuilder<false, MetaslabEnd> free_queue;
@@ -156,7 +156,7 @@ namespace snmalloc
       auto p = tmp_fl.take(entropy);
       fast_free_list = tmp_fl;
 
-#ifdef CHECK_CLIENT
+#ifdef SNMALLOC_CHECK_CLIENT
       entropy.refresh_bits();
 #endif
 

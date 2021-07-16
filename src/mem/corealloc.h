@@ -144,7 +144,7 @@ namespace snmalloc
       FreeListBuilder<false> b;
       SNMALLOC_ASSERT(b.empty());
 
-#ifdef CHECK_CLIENT
+#ifdef SNMALLOC_CHECK_CLIENT
       // Structure to represent the temporary list elements
       struct PreAllocObject
       {
@@ -211,7 +211,7 @@ namespace snmalloc
       meta->free_queue.close(fl, entropy);
       void* p = finish_alloc_no_zero(fl.take(entropy), sizeclass);
 
-#ifdef CHECK_CLIENT
+#ifdef SNMALLOC_CHECK_CLIENT
       // Check free list is well-formed on platforms with
       // integers as pointers.
       size_t count = 1; // Already taken one above.
