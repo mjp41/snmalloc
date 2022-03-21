@@ -62,7 +62,7 @@ namespace snmalloc
 #  endif
       ;
 
-    static SNMALLOC_CONSTINIT_STATIC size_t minimum_alloc_size = 0x10000;
+    static SNMALLOC_CONSTINIT_STATIC size_t minimum_alloc_size =  0x200000;
 
     static constexpr size_t page_size = 0x1000;
 
@@ -144,10 +144,35 @@ namespace snmalloc
     template<ZeroMem zero_mem>
     static void notify_using(void* p, size_t size) noexcept
     {
+      static struct PrivilegeBegger {
+        PrivilegeBegger() {
+          HANDLE hToken;
+          TOKEN_PRIVILEGES tp;
+          BOOL status;
+          OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken);
+          LookupPrivilegeValueW(nullptr, L"SeLockMemoryPrivilege", &tp.Privileges[0].Luid);
+          tp.PrivilegeCount = 1;
+          tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+          status = AdjustTokenPrivileges(hToken, FALSE, &tp, 0, (PTOKEN_PRIVILEGES)nullptr, 0);
+          if (status == 0)
+            error("Failed to gain privilege");
+          CloseHandle(hToken);
+        }
+      } begger [[maybe_unused]];
+
       SNMALLOC_ASSERT(
         is_aligned_block<page_size>(p, size) || (zero_mem == NoZero));
 
-      void* r = VirtualAlloc(p, size, MEM_COMMIT, PAGE_READWRITE);
+      // Query platform for this.
+      auto large_page_size = 0x200000;
+
+      auto flags =
+        (bits::align_up(size, large_page_size) == size)
+        && (pointer_align_up(p, large_page_size) == p) ?
+        MEM_LARGE_PAGES:
+        0;
+
+      void* r = VirtualAlloc(p, size, MEM_COMMIT | flags, PAGE_READWRITE);
 
       if (r == nullptr)
         report_fatal_error(
