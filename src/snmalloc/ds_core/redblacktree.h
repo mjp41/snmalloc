@@ -479,6 +479,7 @@ namespace snmalloc
     bool remove_path(RBPath& path)
     {
       ChildRef splice = path.curr();
+      K removed = path.curr();
       SNMALLOC_ASSERT(!(splice.is_null()));
 
       debug_log("Removing", path);
@@ -518,7 +519,8 @@ namespace snmalloc
 
       debug_log("Splice done", path);
 
-      // TODO: Clear node contents?
+      // Clear node contents
+      Rep::clear(removed);
 
       // Red leaf removal requires no rebalancing.
       if (leaf_red)
