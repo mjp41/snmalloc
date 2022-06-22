@@ -205,6 +205,7 @@ namespace snmalloc
             chunk.unsafe_ptr(), bits::next_pow2(size));
         }
 
+        core_alloc->attached_cache->release();
         return capptr_chunk_is_alloc(capptr_to_user_address_control(chunk));
       });
     }
@@ -275,6 +276,7 @@ namespace snmalloc
         local_cache.remote_dealloc_cache.template dealloc<sizeof(CoreAlloc)>(
           entry.get_remote()->trunc_id(), p, key_global);
         post_remote_cache();
+        local_cache.release();
         return;
       }
 
@@ -283,8 +285,9 @@ namespace snmalloc
       // can't suddenly become a large deallocation; the only distinction is
       // between being ours to handle and something to post to a Remote.)
       lazy_init(
-        [&](CoreAlloc*, CapPtr<void, capptr::bounds::Alloc> p) {
+        [&](CoreAlloc* c, CapPtr<void, capptr::bounds::Alloc> p) {
           dealloc(p.unsafe_ptr()); // TODO don't double count statistics
+          c->attached_cache->release();
           return nullptr;
         },
         p);
@@ -432,6 +435,8 @@ namespace snmalloc
         memset(result, 0, size);
       return result;
 #else
+      local_cache.acquire();
+
       // Perform the - 1 on size, so that zero wraps around and ends up on
       // slow path.
       if (SNMALLOC_LIKELY(
@@ -582,6 +587,12 @@ namespace snmalloc
     }
 #endif
 
+    SNMALLOC_SLOW_PATH void dealloc_local_object_slow(capptr::Alloc<void> p, const PagemapEntry& entry)
+    {
+      core_alloc->dealloc_local_object_slow(p, entry);
+      local_cache.release();
+    }
+
     SNMALLOC_FAST_PATH void dealloc(void* p_raw)
     {
 #ifdef SNMALLOC_PASS_THROUGH
@@ -610,6 +621,8 @@ namespace snmalloc
       p_raw = __builtin_cheri_offset_set(p_raw, 0);
 #  endif
 
+      local_cache.acquire();
+
       capptr::AllocWild<void> p_wild = capptr_from_client(p_raw);
 
       /*
@@ -636,7 +649,10 @@ namespace snmalloc
 #  endif
         if (SNMALLOC_LIKELY(CoreAlloc::dealloc_local_object_fast(
               entry, p_tame, local_cache.entropy)))
+        {
+          local_cache.release();
           return;
+        }
         core_alloc->dealloc_local_object_slow(p_tame, entry);
         return;
       }
@@ -656,6 +672,7 @@ namespace snmalloc
           message<1024>(
             "Remote dealloc fast {} ({})", p_raw, alloc_size(p_raw));
 #  endif
+          local_cache.release();
           return;
         }
 

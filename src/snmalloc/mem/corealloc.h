@@ -747,6 +747,7 @@ namespace snmalloc
           sl.insert(meta);
         }
 
+        attached_cache->release();
         auto r = finish_alloc<zero_mem, Config>(p, sizeclass);
         return ticker.check_tick(r);
       }
@@ -814,6 +815,7 @@ namespace snmalloc
         alloc_classes[sizeclass].available.insert(meta);
       }
 
+      attached_cache->release();
       auto r = finish_alloc<zero_mem, Config>(p, sizeclass);
       return ticker.check_tick(r);
     }

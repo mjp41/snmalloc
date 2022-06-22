@@ -51,6 +51,22 @@ namespace snmalloc
     // if a deallocation is local.
     RemoteAllocator* remote_allocator;
 
+    std::atomic<size_t> in_use{false};
+    static inline std::atomic<size_t> block_use{0};
+
+    void acquire()
+    {
+      in_use.store(1, std::memory_order_relaxed);
+      std::atomic_signal_fence(std::memory_order_seq_cst);
+      while (SNMALLOC_UNLIKELY(block_use.load(std::memory_order_relaxed)) != 0)
+        Aal::pause();
+    }
+
+    void release()
+    {
+      in_use.store(0, std::memory_order_relaxed);
+    }
+
     /**
      * Remote deallocations for other threads
      */
@@ -103,6 +119,7 @@ namespace snmalloc
       if (SNMALLOC_LIKELY(!fl.empty()))
       {
         auto p = fl.take(key, domesticate);
+        release();
         return finish_alloc<zero_mem, Config>(p, sizeclass);
       }
       return slowpath(sizeclass, &fl);
