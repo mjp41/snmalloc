@@ -59,6 +59,12 @@ namespace snmalloc
 #ifdef SNMALLOC_ATOMIC_PAUSE
       while (SNMALLOC_UNLIKELY(in_use.exchange(1) == 1))
         pause();
+#elif defined (SNMALLOC_ATOMIC_PAUSE_INCREMENT)
+      while (SNMALLOC_UNLIKELY(in_use.fetch_add(1) == 0))
+      {
+        pause();
+        in_use--;
+      }  
 #else
       in_use.store(1, std::memory_order_relaxed);
       std::atomic_signal_fence(std::memory_order_seq_cst);
@@ -69,7 +75,11 @@ namespace snmalloc
 
     void release()
     {
+#if defined (SNMALLOC_ATOMIC_PAUSE_INCREMENT)
+      in_use--;
+#else   
       in_use.store(0, std::memory_order_relaxed);
+#endif
     }
 
     /**
