@@ -685,6 +685,8 @@ namespace snmalloc
       // TODO: Should this be tested even in the !CHECK_CLIENT case?
       snmalloc_check_client(p_tame == nullptr, "Not allocated by snmalloc.");
 
+      local_cache.release();
+
 #  ifdef SNMALLOC_TRACING
       message<1024>("nullptr deallocation");
 #  endif
