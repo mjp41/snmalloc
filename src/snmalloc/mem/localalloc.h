@@ -653,7 +653,7 @@ namespace snmalloc
           local_cache.release();
           return;
         }
-        core_alloc->dealloc_local_object_slow(p_tame, entry);
+        dealloc_local_object_slow(p_tame, entry);
         return;
       }
 
