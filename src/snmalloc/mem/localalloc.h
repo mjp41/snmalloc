@@ -286,8 +286,8 @@ namespace snmalloc
       // between being ours to handle and something to post to a Remote.)
       lazy_init(
         [&](CoreAlloc* c, CapPtr<void, capptr::bounds::Alloc> p) {
+          c->attached_cache->release(); // TODO think hard here.
           dealloc(p.unsafe_ptr()); // TODO don't double count statistics
-          c->attached_cache->release();
           return nullptr;
         },
         p);
