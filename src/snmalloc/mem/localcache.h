@@ -56,10 +56,15 @@ namespace snmalloc
 
     void acquire()
     {
+#ifdef SNMALLOC_ATOMIC_PAUSE
+      while (SNMALLOC_UNLIKELY(in_use.exchange(1) == 1))
+        pause();
+#else
       in_use.store(1, std::memory_order_relaxed);
       std::atomic_signal_fence(std::memory_order_seq_cst);
       while (SNMALLOC_UNLIKELY(block_use.load(std::memory_order_relaxed)) != 0)
         Aal::pause();
+#endif
     }
 
     void release()
