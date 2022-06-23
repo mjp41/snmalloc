@@ -60,10 +60,13 @@ namespace snmalloc
       while (SNMALLOC_UNLIKELY(in_use.exchange(1) == 1))
         Aal::pause();
 #elif defined (SNMALLOC_ATOMIC_PAUSE_INCREMENT) || true
-      while (SNMALLOC_UNLIKELY(in_use.fetch_add(1) != 0))
+      in_use++;
+      while (SNMALLOC_UNLIKELY(in_use.load() != 1))
       {
-        Aal::pause();
         in_use--;
+        Aal::pause();
+        // This livelocks, but should give perf correctly
+        in_use++;
       }  
 #else
       in_use.store(1, std::memory_order_relaxed);
