@@ -464,6 +464,11 @@ namespace snmalloc
     {}
 
     /**
+     * default to nullptr
+     */
+    constexpr SNMALLOC_FAST_PATH AtomicCapPtr() : AtomicCapPtr(nullptr) {}
+
+    /**
      * Interconversion with CapPtr
      */
     constexpr SNMALLOC_FAST_PATH AtomicCapPtr(CapPtr<T, bounds> p)

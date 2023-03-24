@@ -138,6 +138,8 @@ namespace snmalloc
 #endif
 
       public:
+        constexpr T() : next_object(){};
+
         template<
           SNMALLOC_CONCEPT(capptr::ConceptBound) BView = typename BQueue::
             template with_wildness<capptr::dimension::Wildness::Tame>,
