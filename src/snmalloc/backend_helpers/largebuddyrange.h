@@ -276,7 +276,7 @@ namespace snmalloc
               auto capptr = capptr::Arena<void>::unsafe_from(reinterpret_cast<void*>(ptr));
               if (capptr == nullptr)
               {
-                message<1024>("Requested total = {}, provided total = {}  @{}", requested_total, provided_total), this;
+                message<1024>("Requested total = {}, provided total = {}  @{}", requested_total, provided_total, this);
               }
               SNMALLOC_ASSERT(capptr != nullptr);
               parent_dealloc_range(
