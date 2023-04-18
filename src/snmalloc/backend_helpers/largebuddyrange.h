@@ -305,8 +305,8 @@ namespace snmalloc
             auto overflow =
               capptr::Arena<void>::unsafe_from(reinterpret_cast<void*>(
                 buddy_large.add_block(base.unsafe_uintptr(), align)));
-
-            dealloc_overflow(overflow);
+            if (overflow != nullptr)
+              dealloc_overflow(overflow);
           });
 
         // If the underlying range was not aligned, then we simply drop the memory
