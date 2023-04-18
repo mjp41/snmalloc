@@ -272,12 +272,12 @@ namespace snmalloc
           {
             while (requested_total > (provided_total * 4))
             {
+              invariant();
               message<1024>("Try to return memory @{}", this);
               auto [ptr, size] = buddy_large.remove_largest();
               auto capptr = capptr::Arena<void>::unsafe_from(reinterpret_cast<void*>(ptr));
               if (capptr == nullptr)
               {
-                invariant();
                 message<1024>("Error no memory. Requested total = {}, provided total = {}  @{}", requested_total, provided_total, this);
                 error("Unreachable.");
               }
