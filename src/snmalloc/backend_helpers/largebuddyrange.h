@@ -244,6 +244,7 @@ namespace snmalloc
         static_assert(
           MAX_SIZE_BITS != (bits::BITS - 1), "Don't set SFINAE parameter");
         requested_total -= size;
+        message<1024>("requested_total -= {} to {}", size, requested_total);
         parent.dealloc_range(base, size);
       }
 
@@ -251,7 +252,10 @@ namespace snmalloc
       {
         auto result = parent.alloc_range(size);
         if (result != nullptr)
+        {
+          message<1024>("requested_total += {} to {}", size, requested_total);
           requested_total += size;
+        }
         return result;
       }
 
