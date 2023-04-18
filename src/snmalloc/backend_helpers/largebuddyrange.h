@@ -260,6 +260,7 @@ namespace snmalloc
             while (requested_total > (provided_total * 4))
             {
               auto [ptr, size] = buddy_large.remove_largest();
+              SNMALLOC_ASSERT(ptr != nullptr);
               requested_total -= size;
               parent.dealloc_range(
                 capptr::Arena<void>::unsafe_from(reinterpret_cast<void*>(ptr)),
