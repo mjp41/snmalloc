@@ -272,13 +272,14 @@ namespace snmalloc
           {
             while (requested_total > (provided_total * 4))
             {
+              message<1024>("Try to return memory");
               auto [ptr, size] = buddy_large.remove_largest();
               auto capptr = capptr::Arena<void>::unsafe_from(reinterpret_cast<void*>(ptr));
               if (capptr == nullptr)
               {
                 message<1024>("Requested total = {}, provided total = {}  @{}", requested_total, provided_total, this);
+                error("Unreachable.");
               }
-              SNMALLOC_ASSERT(capptr != nullptr);
               parent_dealloc_range(
                 capptr,
                 size);
@@ -375,7 +376,7 @@ namespace snmalloc
 
       SNMALLOC_FAST_PATH capptr::Arena<void> alloc_range_impl(size_t size)
       {
-        message<1024>("alloc_range_impl enter");
+        message<1024>("alloc_range_impl enter (size {})", size);
         SNMALLOC_ASSERT(size >= MIN_CHUNK_SIZE);
         SNMALLOC_ASSERT(bits::is_pow2(size));
 
