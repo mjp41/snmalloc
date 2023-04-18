@@ -244,7 +244,6 @@ namespace snmalloc
         static_assert(
           MAX_SIZE_BITS != (bits::BITS - 1), "Don't set SFINAE parameter");
         requested_total -= size;
-        message<1024>("requested_total -= {} to {} @{}", size, requested_total, this);
         parent.dealloc_range(base, size);
       }
 
@@ -253,7 +252,6 @@ namespace snmalloc
         auto result = parent.alloc_range(size);
         if (result != nullptr)
         {
-          message<1024>("requested_total += {} to {} @{}", size, requested_total, this);
           requested_total += size;
         }
         return result;
@@ -273,7 +271,6 @@ namespace snmalloc
             while (requested_total > (provided_total * 4))
             {
               invariant();
-              message<1024>("Try to return memory @{}", this);
               auto [ptr, size] = buddy_large.remove_largest();
               auto capptr = capptr::Arena<void>::unsafe_from(reinterpret_cast<void*>(ptr));
               if (capptr == nullptr)
@@ -382,7 +379,6 @@ namespace snmalloc
 
       SNMALLOC_FAST_PATH capptr::Arena<void> alloc_range_impl(size_t size)
       {
-        message<1024>("alloc_range_impl enter (size {}) @ {}", size, this);
         SNMALLOC_ASSERT(size >= MIN_CHUNK_SIZE);
         SNMALLOC_ASSERT(bits::is_pow2(size));
 
@@ -400,7 +396,6 @@ namespace snmalloc
             result = refill(size);
         }
 
-        message<1024>("alloc_range_impl exit @{}", this);
         return result;
       }
 
@@ -421,7 +416,6 @@ namespace snmalloc
         if (result != nullptr)
         {
           provided_total += size;
-          message<1024>("provided_total += {} to {} @{}", size, provided_total, this);
         }
         invariant();
         return result;
@@ -433,7 +427,6 @@ namespace snmalloc
         SNMALLOC_ASSERT(bits::is_pow2(size));
 
         provided_total -= size;
-        message<1024>("provided_total -= {} to {} @{}", size, provided_total, this);
 
         if constexpr (MAX_SIZE_BITS != (bits::BITS - 1))
         {
