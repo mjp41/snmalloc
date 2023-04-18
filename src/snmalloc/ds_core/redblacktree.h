@@ -751,6 +751,22 @@ namespace snmalloc
       return result;
     }
 
+    K remove_max()
+    {
+      if (is_empty())
+        return Rep::null;
+
+      auto path = get_root_path();
+      while (path.move(false))
+      {
+      }
+
+      K result = path.curr();
+
+      remove_path(path);
+      return result;
+    }
+
     bool remove_elem(K value)
     {
       if (is_empty())

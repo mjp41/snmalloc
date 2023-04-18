@@ -221,6 +221,14 @@ namespace snmalloc
       size_t requested_total = 0;
 
       /**
+       * The size of memory provided so far.
+       *
+       * This is used to determine how much memory is in the
+       * buddy allocator, and if some should be returned.
+       */
+      size_t provided_total = 0;
+
+      /**
        * Buddy allocator used to represent this range of memory.
        */
       Buddy<BuddyChunkRep<Pagemap>, MIN_CHUNK_BITS, MAX_SIZE_BITS> buddy_large;
@@ -244,7 +252,19 @@ namespace snmalloc
         {
           if (overflow != nullptr)
           {
+            requested_total -= bits::one_at_bit(MAX_SIZE_BITS);
             parent.dealloc_range(overflow, bits::one_at_bit(MAX_SIZE_BITS));
+          }
+          else
+          {
+            while (requested_total > (provided_total * 4))
+            {
+              auto [ptr, size] = buddy_large.remove_largest();
+              requested_total -= size;
+              parent.dealloc_range(
+                capptr::Arena<void>::unsafe_from(reinterpret_cast<void*>(ptr)),
+                size);
+            }
           }
         }
         else
@@ -337,6 +357,26 @@ namespace snmalloc
         return nullptr;
       }
 
+      SNMALLOC_FAST_PATH capptr::Arena<void> alloc_range_impl(size_t size)
+      {
+        SNMALLOC_ASSERT(size >= MIN_CHUNK_SIZE);
+        SNMALLOC_ASSERT(bits::is_pow2(size));
+
+        if (size >= (bits::one_at_bit(MAX_SIZE_BITS) - 1))
+        {
+          if (ParentRange::Aligned)
+            return parent.alloc_range(size);
+          return nullptr;
+        }
+
+        auto result = capptr::Arena<void>::unsafe_from(
+          reinterpret_cast<void*>(buddy_large.remove_block(size)));
+
+        if (result != nullptr)
+          return result;
+        return refill(size);
+      }
+
     public:
       static constexpr bool Aligned = true;
 
@@ -349,26 +389,11 @@ namespace snmalloc
 
       constexpr Type() = default;
 
-      capptr::Arena<void> alloc_range(size_t size)
-      {
-        SNMALLOC_ASSERT(size >= MIN_CHUNK_SIZE);
-        SNMALLOC_ASSERT(bits::is_pow2(size));
-
-        if (size >= (bits::one_at_bit(MAX_SIZE_BITS) - 1))
-        {
-          if (ParentRange::Aligned)
-            return parent.alloc_range(size);
-
-          return nullptr;
-        }
-
-        auto result = capptr::Arena<void>::unsafe_from(
-          reinterpret_cast<void*>(buddy_large.remove_block(size)));
-
+      capptr::Arena<void> alloc_range(size_t size) {
+        auto result = alloc_range_impl(size);
         if (result != nullptr)
-          return result;
-
-        return refill(size);
+          provided_total += size;
+        return result;
       }
 
       void dealloc_range(capptr::Arena<void> base, size_t size)
@@ -376,10 +401,13 @@ namespace snmalloc
         SNMALLOC_ASSERT(size >= MIN_CHUNK_SIZE);
         SNMALLOC_ASSERT(bits::is_pow2(size));
 
+        provided_total -= size;
+
         if constexpr (MAX_SIZE_BITS != (bits::BITS - 1))
         {
           if (size >= (bits::one_at_bit(MAX_SIZE_BITS) - 1))
           {
+            requested_total -= size;
             parent_dealloc_range(base, size);
             return;
           }

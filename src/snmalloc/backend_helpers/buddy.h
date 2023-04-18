@@ -146,5 +146,21 @@ namespace snmalloc
       add_block(second, size);
       return bigger;
     }
+
+    typename std::pair<typename Rep::Contents, size_t> remove_largest()
+    {
+      for (size_t idx = empty_at_or_above; idx > 0; idx--)
+      {
+        auto addr = trees[idx - 1].remove_max();
+        if (addr != Rep::null)
+        {
+          auto size = bits::one_at_bit(idx + MIN_SIZE_BITS - 1);
+          validate_block(addr, size);
+          return {addr, size};
+        }
+      }
+
+      return {Rep::null,0};
+    }
   };
 } // namespace snmalloc
