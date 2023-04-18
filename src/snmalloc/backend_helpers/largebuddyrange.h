@@ -268,7 +268,8 @@ namespace snmalloc
           }
           else
           {
-            while (requested_total > (provided_total * 4))
+            auto threshold = bits::max(provided_total * 4, 16 * MIN_CHUNK_SIZE);
+            while (requested_total > threshold)
             {
               invariant();
               auto [ptr, size] = buddy_large.remove_largest();
