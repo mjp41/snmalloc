@@ -447,12 +447,14 @@ namespace snmalloc
 
       void invariant()
       {
+#ifndef NDEBUG 
         size_t contains_bytes = buddy_large.contains_bytes();
         if (requested_total != (provided_total + contains_bytes))
         {
           message<1024>("LargeBuddyInvariant failed: {} - ({} + {}) = {} @{}", requested_total, provided_total, contains_bytes, requested_total - (provided_total + contains_bytes), this);
           abort();
         }
+#endif
       }
     };
   };
