@@ -375,22 +375,26 @@ namespace snmalloc
 
       SNMALLOC_FAST_PATH capptr::Arena<void> alloc_range_impl(size_t size)
       {
+        message<1024>("alloc_range_impl enter");
         SNMALLOC_ASSERT(size >= MIN_CHUNK_SIZE);
         SNMALLOC_ASSERT(bits::is_pow2(size));
 
+        capptr::Arena<void> result{nullptr};
         if (size >= (bits::one_at_bit(MAX_SIZE_BITS) - 1))
         {
           if (ParentRange::Aligned)
-            return parent_alloc_range(size);
-          return nullptr;
+            result = parent_alloc_range(size);
+        }
+        else
+        {
+          result = capptr::Arena<void>::unsafe_from(
+            reinterpret_cast<void*>(buddy_large.remove_block(size)));
+          if (result == nullptr)
+            result = refill(size);
         }
 
-        auto result = capptr::Arena<void>::unsafe_from(
-          reinterpret_cast<void*>(buddy_large.remove_block(size)));
-
-        if (result != nullptr)
-          return result;
-        return refill(size);
+        message<1024>("alloc_range_impl exit");
+        return result;
       }
 
     public:
