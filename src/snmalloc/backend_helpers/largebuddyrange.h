@@ -243,8 +243,18 @@ namespace snmalloc
       {
         static_assert(
           MAX_SIZE_BITS != (bits::BITS - 1), "Don't set SFINAE parameter");
+        requested_total -= size;
         parent.dealloc_range(base, size);
       }
+
+      capptr::Arena<void> parent_alloc_range(size_t size)
+      {
+        auto result = parent.alloc_range(size);
+        if (result != nullptr)
+          requested_total += size;
+        return result;
+      }
+
 
       void dealloc_overflow(capptr::Arena<void> overflow)
       {
@@ -252,8 +262,7 @@ namespace snmalloc
         {
           if (overflow != nullptr)
           {
-            requested_total -= bits::one_at_bit(MAX_SIZE_BITS);
-            parent.dealloc_range(overflow, bits::one_at_bit(MAX_SIZE_BITS));
+            parent_dealloc_range(overflow, bits::one_at_bit(MAX_SIZE_BITS));
           }
           else
           {
@@ -266,8 +275,7 @@ namespace snmalloc
                 message<1024>("Requested total = {}, provided total = {}", requested_total, provided_total);
               }
               SNMALLOC_ASSERT(capptr != nullptr);
-              requested_total -= size;
-              parent.dealloc_range(
+              parent_dealloc_range(
                 capptr,
                 size);
             }
@@ -315,10 +323,9 @@ namespace snmalloc
           refill_size = bits::max(refill_size, size);
           refill_size = bits::next_pow2(refill_size);
 
-          auto refill_range = parent.alloc_range(refill_size);
+          auto refill_range = parent_alloc_range(refill_size);
           if (refill_range != nullptr)
           {
-            requested_total += refill_size;
             add_range(pointer_offset(refill_range, size), refill_size - size);
           }
           return refill_range;
@@ -341,11 +348,10 @@ namespace snmalloc
         auto refill_size = bits::max(needed_size, REFILL_SIZE);
         while (needed_size <= refill_size)
         {
-          auto refill = parent.alloc_range(refill_size);
+          auto refill = parent_alloc_range(refill_size);
 
           if (refill != nullptr)
           {
-            requested_total += refill_size;
             add_range(refill, refill_size);
 
             SNMALLOC_ASSERT(refill_size < bits::one_at_bit(MAX_SIZE_BITS));
@@ -354,7 +360,7 @@ namespace snmalloc
                 ParentRange::Aligned,
               "Required to prevent overflow.");
 
-            return alloc_range(size);
+            return alloc_range_impl(size);
           }
 
           refill_size >>= 1;
@@ -371,7 +377,7 @@ namespace snmalloc
         if (size >= (bits::one_at_bit(MAX_SIZE_BITS) - 1))
         {
           if (ParentRange::Aligned)
-            return parent.alloc_range(size);
+            return parent_alloc_range(size);
           return nullptr;
         }
 
@@ -413,7 +419,6 @@ namespace snmalloc
         {
           if (size >= (bits::one_at_bit(MAX_SIZE_BITS) - 1))
           {
-            requested_total -= size;
             parent_dealloc_range(base, size);
             return;
           }
