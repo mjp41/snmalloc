@@ -162,5 +162,17 @@ namespace snmalloc
 
       return {Rep::null,0};
     }
+
+    size_t contains_bytes()
+    {
+      size_t result = 0;
+      for (size_t idx = 0; idx < trees.size(); idx++)
+      {
+        auto size = bits::one_at_bit(idx + MIN_SIZE_BITS);
+        auto count = trees[idx].count();
+        result += size * count;
+      }
+      return result;
+    }
   };
 } // namespace snmalloc

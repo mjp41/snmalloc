@@ -5,12 +5,13 @@
 namespace snmalloc
 {
   template<size_t MIN_BITS, SNMALLOC_CONCEPT(capptr::IsBound) B, typename F>
-  void range_to_pow_2_blocks(CapPtr<void, B> base, size_t length, F f)
+  size_t range_to_pow_2_blocks(CapPtr<void, B> base, size_t length_orig, F f)
   {
-    auto end = pointer_offset(base, length);
+    auto end = pointer_offset(base, length_orig);
     base = pointer_align_up(base, bits::one_at_bit(MIN_BITS));
     end = pointer_align_down(end, bits::one_at_bit(MIN_BITS));
-    length = pointer_diff(base, end);
+    size_t length = pointer_diff(base, end);
+    size_t lost = length_orig - length;
 
     bool first = true;
 
@@ -33,6 +34,8 @@ namespace snmalloc
       base = pointer_offset(base, align);
       length -= align;
     }
+
+    return lost;
   }
 
   /**

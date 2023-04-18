@@ -299,7 +299,7 @@ namespace snmalloc
        */
       void add_range(capptr::Arena<void> base, size_t length)
       {
-        range_to_pow_2_blocks<MIN_CHUNK_BITS>(
+        auto lost = range_to_pow_2_blocks<MIN_CHUNK_BITS>(
           base, length, [this](capptr::Arena<void> base, size_t align, bool) {
             auto overflow =
               capptr::Arena<void>::unsafe_from(reinterpret_cast<void*>(
@@ -307,6 +307,11 @@ namespace snmalloc
 
             dealloc_overflow(overflow);
           });
+
+        // If the underlying range was not aligned, then we simply drop the memory
+        // TODO is the correct thing to do.
+        // message<1024>("Lost due to alignment: {}", lost);
+        requested_total -= lost;
       }
 
       capptr::Arena<void> refill(size_t size)
@@ -417,6 +422,7 @@ namespace snmalloc
           provided_total += size;
           message<1024>("provided_total += {} to {} @{}", size, provided_total, this);
         }
+        invariant();
         return result;
       }
 
@@ -441,6 +447,17 @@ namespace snmalloc
           capptr::Arena<void>::unsafe_from(reinterpret_cast<void*>(
             buddy_large.add_block(base.unsafe_uintptr(), size)));
         dealloc_overflow(overflow);
+        invariant();
+      }
+
+      void invariant()
+      {
+        size_t contains_bytes = buddy_large.contains_bytes();
+        if (requested_total != (provided_total + contains_bytes))
+        {
+          message<1024>("LargeBuddyInvariant failed: {} - ({} + {}) = {} @{}", requested_total, provided_total, contains_bytes, requested_total - (provided_total + contains_bytes), this);
+          abort();
+        }
       }
     };
   };

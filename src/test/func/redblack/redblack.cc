@@ -143,7 +143,7 @@ void test(size_t size, unsigned int seed)
   for (size_t i = 0; i < 20 * size; i++)
   {
     auto batch = 1 + rand.next() % (3 + (size / 2));
-    auto op = rand.next() % 4;
+    auto op = rand.next() % 7;
     if (op < 2 || first)
     {
       first = false;
@@ -172,11 +172,10 @@ void test(size_t size, unsigned int seed)
         entries.erase(entries.begin() + static_cast<int>(index));
       }
     }
-    else
+    else if (op == 4)
     {
       for (auto j = batch; j > 0; j--)
       {
-        //   print();
         auto min = tree.remove_min();
         auto s = entries.size();
         if (min == 0)
@@ -189,6 +188,32 @@ void test(size_t size, unsigned int seed)
           std::cout << "Failed to remove min: " << min << std::endl;
           abort();
         }
+      }
+    }
+    else if (op == 5)
+    {
+      for (auto j = batch; j > 0; j--)
+      {
+        auto min = tree.remove_max();
+        auto s = entries.size();
+        if (min == 0)
+          break;
+
+        entries.erase(
+          std::remove(entries.begin(), entries.end(), min), entries.end());
+        if (s != entries.size() + 1)
+        {
+          std::cout << "Failed to remove min: " << min << std::endl;
+          abort();
+        }
+      }
+    }
+    else
+    {
+      if (tree.count() != entries.size())
+      {
+        std::cout << "Sizes are different! " << tree.count() << " != " << entries.size() << std::endl;
+        abort();
       }
     }
     if (entries.size() == 0)
