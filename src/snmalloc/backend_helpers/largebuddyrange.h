@@ -244,7 +244,7 @@ namespace snmalloc
         static_assert(
           MAX_SIZE_BITS != (bits::BITS - 1), "Don't set SFINAE parameter");
         requested_total -= size;
-        message<1024>("requested_total -= {} to {}", size, requested_total);
+        message<1024>("requested_total -= {} to {} @{}", size, requested_total, this);
         parent.dealloc_range(base, size);
       }
 
@@ -253,7 +253,7 @@ namespace snmalloc
         auto result = parent.alloc_range(size);
         if (result != nullptr)
         {
-          message<1024>("requested_total += {} to {}", size, requested_total);
+          message<1024>("requested_total += {} to {} @{}", size, requested_total, this);
           requested_total += size;
         }
         return result;
@@ -276,7 +276,7 @@ namespace snmalloc
               auto capptr = capptr::Arena<void>::unsafe_from(reinterpret_cast<void*>(ptr));
               if (capptr == nullptr)
               {
-                message<1024>("Requested total = {}, provided total = {}", requested_total, provided_total);
+                message<1024>("Requested total = {}, provided total = {}  @{}", requested_total, provided_total), this;
               }
               SNMALLOC_ASSERT(capptr != nullptr);
               parent_dealloc_range(
@@ -410,7 +410,7 @@ namespace snmalloc
         if (result != nullptr)
         {
           provided_total += size;
-          message<1024>("provided_total += {} to {}", size, provided_total);
+          message<1024>("provided_total += {} to {} @{}", size, provided_total, this);
         }
         return result;
       }
@@ -421,7 +421,7 @@ namespace snmalloc
         SNMALLOC_ASSERT(bits::is_pow2(size));
 
         provided_total -= size;
-        message<1024>("provided_total -= {} to {}", size, provided_total);
+        message<1024>("provided_total -= {} to {} @{}", size, provided_total, this);
 
         if constexpr (MAX_SIZE_BITS != (bits::BITS - 1))
         {
