@@ -408,7 +408,10 @@ namespace snmalloc
       capptr::Arena<void> alloc_range(size_t size) {
         auto result = alloc_range_impl(size);
         if (result != nullptr)
+        {
           provided_total += size;
+          message<1024>("provided_total += {} to {}", size, provided_total);
+        }
         return result;
       }
 
@@ -418,6 +421,7 @@ namespace snmalloc
         SNMALLOC_ASSERT(bits::is_pow2(size));
 
         provided_total -= size;
+        message<1024>("provided_total -= {} to {}", size, provided_total);
 
         if constexpr (MAX_SIZE_BITS != (bits::BITS - 1))
         {
