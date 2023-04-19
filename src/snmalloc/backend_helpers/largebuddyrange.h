@@ -221,6 +221,14 @@ namespace snmalloc
       size_t requested_total = 0;
 
       /**
+       * The size of memory provided so far.
+       *
+       * This is used to determine how much memory is in the
+       * buddy allocator, and if some should be returned.
+       */
+      size_t provided_total = 0;
+
+      /**
        * Buddy allocator used to represent this range of memory.
        */
       Buddy<BuddyChunkRep<Pagemap>, MIN_CHUNK_BITS, MAX_SIZE_BITS> buddy_large;
@@ -235,8 +243,20 @@ namespace snmalloc
       {
         static_assert(
           MAX_SIZE_BITS != (bits::BITS - 1), "Don't set SFINAE parameter");
+        requested_total -= size;
         parent.dealloc_range(base, size);
       }
+
+      capptr::Arena<void> parent_alloc_range(size_t size)
+      {
+        auto result = parent.alloc_range(size);
+        if (result != nullptr)
+        {
+          requested_total += size;
+        }
+        return result;
+      }
+
 
       void dealloc_overflow(capptr::Arena<void> overflow)
       {
@@ -260,14 +280,18 @@ namespace snmalloc
        */
       void add_range(capptr::Arena<void> base, size_t length)
       {
-        range_to_pow_2_blocks<MIN_CHUNK_BITS>(
+        auto lost = range_to_pow_2_blocks<MIN_CHUNK_BITS>(
           base, length, [this](capptr::Arena<void> base, size_t align, bool) {
             auto overflow =
               capptr::Arena<void>::unsafe_from(reinterpret_cast<void*>(
                 buddy_large.add_block(base.unsafe_uintptr(), align)));
-
-            dealloc_overflow(overflow);
+            if (overflow != nullptr)
+              dealloc_overflow(overflow);
           });
+
+        // If the underlying range was not aligned, then we simply drop the memory
+        // TODO is the correct thing to do.
+        requested_total -= lost;
       }
 
       capptr::Arena<void> refill(size_t size)
@@ -289,10 +313,9 @@ namespace snmalloc
           refill_size = bits::max(refill_size, size);
           refill_size = bits::next_pow2(refill_size);
 
-          auto refill_range = parent.alloc_range(refill_size);
+          auto refill_range = parent_alloc_range(refill_size);
           if (refill_range != nullptr)
           {
-            requested_total += refill_size;
             add_range(pointer_offset(refill_range, size), refill_size - size);
           }
           return refill_range;
@@ -315,11 +338,10 @@ namespace snmalloc
         auto refill_size = bits::max(needed_size, REFILL_SIZE);
         while (needed_size <= refill_size)
         {
-          auto refill = parent.alloc_range(refill_size);
+          auto refill = parent_alloc_range(refill_size);
 
           if (refill != nullptr)
           {
-            requested_total += refill_size;
             add_range(refill, refill_size);
 
             SNMALLOC_ASSERT(refill_size < bits::one_at_bit(MAX_SIZE_BITS));
@@ -328,13 +350,35 @@ namespace snmalloc
                 ParentRange::Aligned,
               "Required to prevent overflow.");
 
-            return alloc_range(size);
+            return alloc_range_impl(size);
           }
 
           refill_size >>= 1;
         }
 
         return nullptr;
+      }
+
+      SNMALLOC_FAST_PATH capptr::Arena<void> alloc_range_impl(size_t size)
+      {
+        SNMALLOC_ASSERT(size >= MIN_CHUNK_SIZE);
+        SNMALLOC_ASSERT(bits::is_pow2(size));
+
+        capptr::Arena<void> result{nullptr};
+        if (size >= (bits::one_at_bit(MAX_SIZE_BITS) - 1))
+        {
+          if (ParentRange::Aligned)
+            result = parent_alloc_range(size);
+        }
+        else
+        {
+          result = capptr::Arena<void>::unsafe_from(
+            reinterpret_cast<void*>(buddy_large.remove_block(size)));
+          if (result == nullptr)
+            result = refill(size);
+        }
+
+        return result;
       }
 
     public:
@@ -349,32 +393,22 @@ namespace snmalloc
 
       constexpr Type() = default;
 
-      capptr::Arena<void> alloc_range(size_t size)
-      {
-        SNMALLOC_ASSERT(size >= MIN_CHUNK_SIZE);
-        SNMALLOC_ASSERT(bits::is_pow2(size));
-
-        if (size >= (bits::one_at_bit(MAX_SIZE_BITS) - 1))
-        {
-          if (ParentRange::Aligned)
-            return parent.alloc_range(size);
-
-          return nullptr;
-        }
-
-        auto result = capptr::Arena<void>::unsafe_from(
-          reinterpret_cast<void*>(buddy_large.remove_block(size)));
-
+      capptr::Arena<void> alloc_range(size_t size) {
+        auto result = alloc_range_impl(size);
         if (result != nullptr)
-          return result;
-
-        return refill(size);
+        {
+          provided_total += size;
+        }
+        invariant();
+        return result;
       }
 
       void dealloc_range(capptr::Arena<void> base, size_t size)
       {
         SNMALLOC_ASSERT(size >= MIN_CHUNK_SIZE);
         SNMALLOC_ASSERT(bits::is_pow2(size));
+
+        provided_total -= size;
 
         if constexpr (MAX_SIZE_BITS != (bits::BITS - 1))
         {
@@ -389,6 +423,19 @@ namespace snmalloc
           capptr::Arena<void>::unsafe_from(reinterpret_cast<void*>(
             buddy_large.add_block(base.unsafe_uintptr(), size)));
         dealloc_overflow(overflow);
+        invariant();
+      }
+
+      void invariant()
+      {
+#ifndef NDEBUG 
+        size_t contains_bytes = buddy_large.contains_bytes();
+        if (requested_total != (provided_total + contains_bytes))
+        {
+          message<1024>("LargeBuddyInvariant failed: {} - ({} + {}) = {} @{}", requested_total, provided_total, contains_bytes, requested_total - (provided_total + contains_bytes), this);
+          abort();
+        }
+#endif
       }
     };
   };
