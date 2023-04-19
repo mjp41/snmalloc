@@ -751,6 +751,48 @@ namespace snmalloc
       return result;
     }
 
+    K remove_max()
+    {
+      if (is_empty())
+        return Rep::null;
+
+      auto path = get_root_path();
+      while (path.move(false))
+      {
+      }
+
+      K result = path.curr();
+
+      remove_path(path);
+      return result;
+    }
+
+    size_t count_rec(RBPath& path)
+    {
+      size_t result = 1;
+      if (path.move(true))
+      {
+        result += count_rec(path);
+        path.pop();
+      }
+
+      if (path.move(false))
+      {
+        result += count_rec(path);
+        path.pop();
+      }
+
+      return result;
+    }
+
+    size_t count()
+    {
+      if (is_empty())
+        return 0;
+      auto path = get_root_path();
+      return count_rec(path);
+    }
+
     bool remove_elem(K value)
     {
       if (is_empty())
