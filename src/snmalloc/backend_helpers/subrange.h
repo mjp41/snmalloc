@@ -26,14 +26,15 @@ namespace snmalloc
 
       using ChunkBounds = typename ParentRange::ChunkBounds;
 
-      CapPtr<void, ChunkBounds> alloc_range(size_t sub_size)
+      Range alloc_range(SizeSpec spec)
       {
+        auto sub_size = spec.required;
         SNMALLOC_ASSERT(bits::is_pow2(sub_size));
 
         auto full_size = sub_size << RATIO_BITS;
-        auto overblock = parent.alloc_range(full_size);
+        auto [overblock,_] = parent.alloc_range({full_size});
         if (overblock == nullptr)
-          return nullptr;
+          return {nullptr, 0};
 
         size_t offset_mask = full_size - sub_size;
         // Don't use first or last block in the larger reservation
@@ -44,7 +45,7 @@ namespace snmalloc
           offset = get_entropy64<PAL>() & offset_mask;
         } while ((offset == 0) || (offset == offset_mask));
 
-        return pointer_offset(overblock, offset);
+        return {pointer_offset(overblock, offset), sub_size};
       }
     };
   };
