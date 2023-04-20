@@ -238,13 +238,15 @@ namespace snmalloc
        * covers the whole range.  Uses template insanity to make this work.
        */
       template<bool exists = MAX_SIZE_BITS != (bits::BITS - 1)>
-      std::enable_if_t<exists>
-      parent_dealloc_range(capptr::Arena<void> base, size_t size)
+      std::enable_if_t<exists, bool>
+      parent_dealloc_range(capptr::Arena<void> base, size_t size, bool force)
       {
         static_assert(
           MAX_SIZE_BITS != (bits::BITS - 1), "Don't set SFINAE parameter");
-        requested_total -= size;
-        parent.dealloc_range(base, size);
+        auto result = parent.dealloc_range(base, size, force);
+        if (result)
+          requested_total -= size;
+        return result;
       }
 
       Range parent_alloc_range(SizeSpec size)
@@ -263,7 +265,7 @@ namespace snmalloc
         {
           if (overflow != nullptr)
           {
-            parent_dealloc_range(overflow, bits::one_at_bit(MAX_SIZE_BITS));
+            parent_dealloc_range(overflow, bits::one_at_bit(MAX_SIZE_BITS), true);
           }
           else
           {
@@ -283,9 +285,15 @@ namespace snmalloc
                 message<1024>("Error no memory. Requested total = {}, provided total = {}  @{}", requested_total, provided_total, this);
                 error("Unreachable.");
               }
-              parent_dealloc_range(
+              auto result = parent_dealloc_range(
                 capptr,
-                size);
+                size,
+                false);
+              if (!result)
+              {
+                buddy_large.add_block(ptr, size);
+                break;
+              }
             }
           }
         }
@@ -431,7 +439,7 @@ namespace snmalloc
         return result;
       }
 
-      void dealloc_range(capptr::Arena<void> base, size_t size)
+      bool dealloc_range(capptr::Arena<void> base, size_t size, bool)
       {
         SNMALLOC_ASSERT(size >= MIN_CHUNK_SIZE);
         SNMALLOC_ASSERT(bits::is_pow2(size));
@@ -442,8 +450,8 @@ namespace snmalloc
         {
           if (size >= (bits::one_at_bit(MAX_SIZE_BITS) - 1))
           {
-            parent_dealloc_range(base, size);
-            return;
+            parent_dealloc_range(base, size, true);
+            return true;
           }
         }
 
@@ -452,6 +460,7 @@ namespace snmalloc
             buddy_large.add_block(base.unsafe_uintptr(), size)));
         dealloc_overflow(overflow);
         invariant();
+        return true;
       }
 
       void invariant()

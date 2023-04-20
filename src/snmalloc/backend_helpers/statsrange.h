@@ -45,10 +45,12 @@ namespace snmalloc
         return result;
       }
 
-      void dealloc_range(CapPtr<void, ChunkBounds> base, size_t size)
+      bool dealloc_range(CapPtr<void, ChunkBounds> base, size_t size, bool force)
       {
-        current_usage -= size;
-        parent.dealloc_range(base, size);
+        auto result = parent.dealloc_range(base, size, force);
+        if (result)
+          current_usage -= size;
+        return result;
       }
 
       size_t get_current_usage()

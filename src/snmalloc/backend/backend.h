@@ -102,7 +102,7 @@ namespace snmalloc
 #endif
       if (p == nullptr)
       {
-        local_state.get_meta_range().dealloc_range(meta_cap, SizeofMetadata);
+        local_state.get_meta_range().dealloc_range(meta_cap, SizeofMetadata, true);
         errno = ENOMEM;
 #ifdef SNMALLOC_TRACING
         message<1024>("Out of memory");
@@ -157,9 +157,9 @@ namespace snmalloc
       capptr::Arena<void> arena = Authmap::amplify(alloc);
 
       local_state.get_meta_range().dealloc_range(
-        capptr::Arena<void>::unsafe_from(&slab_metadata), SizeofMetadata);
+        capptr::Arena<void>::unsafe_from(&slab_metadata), SizeofMetadata, true);
 
-      local_state.get_object_range()->dealloc_range(arena, size);
+      local_state.get_object_range()->dealloc_range(arena, size, true);
     }
 
     template<bool potentially_out_of_range = false>

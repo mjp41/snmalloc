@@ -41,20 +41,22 @@ namespace snmalloc
         return range;
       }
 
-      void dealloc_range(CapPtr<void, ChunkBounds> base, size_t size)
+      bool dealloc_range(CapPtr<void, ChunkBounds> base, size_t size, bool force)
       {
 #ifdef SNMALLOC_TRACING
         message<1024>(
           "dealloc_range({}, {}}) on {}", base.unsafe_ptr(), size, RangeName);
 #endif
-        parent.dealloc_range(base, size);
+        auto result = parent.dealloc_range(base, size, force);
 #ifdef SNMALLOC_TRACING
         message<1024>(
-          "Done dealloc_range({}, {}})! on {}",
+          "Done dealloc_range({}, {}})! on {}{}",
           base.unsafe_ptr(),
           size,
-          RangeName);
+          RangeName,
+          result? "" : " failed!");
 #endif
+        return result;
       }
     };
   };

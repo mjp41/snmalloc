@@ -37,9 +37,9 @@ namespace snmalloc
         return parent->alloc_range(size);
       }
 
-      void dealloc_range(CapPtr<void, ChunkBounds> base, size_t size)
+      bool dealloc_range(CapPtr<void, ChunkBounds> base, size_t size, bool force)
       {
-        parent->dealloc_range(base, size);
+        return parent->dealloc_range(base, size, force);
       }
 
       /**

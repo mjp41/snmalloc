@@ -44,7 +44,7 @@ namespace snmalloc
         return range;
       }
 
-      void dealloc_range(CapPtr<void, ChunkBounds> base, size_t size)
+      bool dealloc_range(CapPtr<void, ChunkBounds> base, size_t size, bool force)
       {
         SNMALLOC_ASSERT_MSG(
           (size % PAL::page_size) == 0,
@@ -52,7 +52,12 @@ namespace snmalloc
           size,
           PAL::page_size);
         PAL::notify_not_using(base.unsafe_ptr(), size);
-        parent.dealloc_range(base, size);
+        bool completed = parent.dealloc_range(base, size, force);
+        if (!completed)
+        {
+          PAL::template notify_using<NoZero>(base.unsafe_ptr(), size);
+        }
+        return completed;
       }
     };
   };

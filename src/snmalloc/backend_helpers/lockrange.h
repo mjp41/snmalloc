@@ -39,10 +39,17 @@ namespace snmalloc
         return parent.alloc_range(size);
       }
 
-      void dealloc_range(CapPtr<void, ChunkBounds> base, size_t size)
+      bool dealloc_range(CapPtr<void, ChunkBounds> base, size_t size, bool force)
       {
-        FlagLock lock(spin_lock);
-        parent.dealloc_range(base, size);
+        if (force)
+        {
+          FlagLock lock(spin_lock);
+          return parent.dealloc_range(base, size, true);
+        }
+
+        return try_flag_lock(spin_lock, [this, base, size](){
+          parent.dealloc_range(base, size, true);
+        }); 
       }
     };
   };

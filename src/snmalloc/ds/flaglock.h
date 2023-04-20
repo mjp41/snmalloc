@@ -133,4 +133,17 @@ namespace snmalloc
       lock.flag.store(false, std::memory_order_release);
     }
   };
+
+  template <typename F>
+  static bool try_flag_lock(FlagWord& lock, F&& f)
+  {
+    if (lock.flag.exchange(true, std::memory_order_acquire))
+      return false;
+
+    lock.set_owner();
+    f();
+    lock.clear_owner();
+    lock.flag.store(false, std::memory_order_release);
+    return true;
+  }
 } // namespace snmalloc

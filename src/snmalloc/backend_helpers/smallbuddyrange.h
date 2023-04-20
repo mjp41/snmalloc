@@ -184,11 +184,11 @@ namespace snmalloc
                   .template as_reinterpret<void>();
               if (overflow != nullptr)
                 parent.dealloc_range(
-                  overflow, bits::one_at_bit(MIN_CHUNK_BITS));
+                  overflow, bits::one_at_bit(MIN_CHUNK_BITS), true);
             }
             else
             {
-              parent.dealloc_range(base, align);
+              parent.dealloc_range(base, align, true);
             }
           });
       }
@@ -244,10 +244,11 @@ namespace snmalloc
         return result.base.template as_reinterpret<void>();
       }
 
-      void dealloc_range(CapPtr<void, ChunkBounds> base, size_t size)
+      bool dealloc_range(CapPtr<void, ChunkBounds> base, size_t size, bool)
       {
         SNMALLOC_ASSERT(bits::is_pow2(size));
         add_range(base, size);
+        return true;
       }
     };
   };
