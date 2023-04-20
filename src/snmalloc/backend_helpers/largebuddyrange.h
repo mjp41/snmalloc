@@ -264,7 +264,30 @@ namespace snmalloc
         {
           if (overflow != nullptr)
           {
-            parent.dealloc_range(overflow, bits::one_at_bit(MAX_SIZE_BITS));
+            parent_dealloc_range(overflow, bits::one_at_bit(MAX_SIZE_BITS));
+          }
+          else
+          {
+            auto threshold = bits::max(provided_total * 6, 16 * MIN_CHUNK_SIZE);
+            // It is very unlikely to hit provided_total == 0 during execution of a thread,
+            // so this is probably the thread is shutting down, return all memory at
+            // this point.
+            if (provided_total == 0)
+              threshold = 0;
+            while (requested_total > threshold)
+            {
+              invariant();
+              auto [ptr, size] = buddy_large.remove_largest();
+              auto capptr = capptr::Arena<void>::unsafe_from(reinterpret_cast<void*>(ptr));
+              if (capptr == nullptr)
+              {
+                message<1024>("Error no memory. Requested total = {}, provided total = {}  @{}", requested_total, provided_total, this);
+                error("Unreachable.");
+              }
+              parent_dealloc_range(
+                capptr,
+                size);
+            }
           }
         }
         else
