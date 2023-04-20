@@ -21,7 +21,7 @@ void test(size_t level)
     size_t current = Alloc::Config::Backend::get_peak_usage();
     ScopedAllocator prod_alloc;
     size_t allocated = 0;
-    
+    size_t start = 0;
     std::vector<void*> allocs;
 
     while (true) {
@@ -31,8 +31,9 @@ void test(size_t level)
 
         if (current != Alloc::Config::Backend::get_peak_usage())
         {
+            std::cout << "Peak usage:    " << current << " for " << start << "-" << allocated-size << " bytes" << std::endl;
+            start = allocated;
             current = Alloc::Config::Backend::get_peak_usage();
-            std::cout << "Peak usage:    " << current << " for " << allocated << " bytes" << std::endl;
         }
 
         if (allocated > 8 * 1024 * 1024)
