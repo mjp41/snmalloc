@@ -267,7 +267,7 @@ namespace snmalloc
           }
           else
           {
-            auto threshold = bits::max(provided_total * 6, 16 * MIN_CHUNK_SIZE);
+            auto threshold = bits::max(provided_total * 8, 16 * MIN_CHUNK_SIZE);
             // It is very unlikely to hit provided_total == 0 during execution of a thread,
             // so this is probably the thread is shutting down, return all memory at
             // this point.
