@@ -19,6 +19,8 @@ namespace snmalloc
     // All RBtrees at or above this index should be empty.
     size_t empty_at_or_above = 0;
 
+    static constexpr size_t MAX_SIZE = bits::one_at_bit(MAX_SIZE_BITS);
+
     size_t to_index(size_t size)
     {
       SNMALLOC_ASSERT(size != 0);
@@ -47,6 +49,11 @@ namespace snmalloc
         SNMALLOC_ASSERT(trees[i].is_empty());
       }
 #endif
+    }
+
+    size_t from_index(size_t idx)
+    {
+      return bits::one_at_bit(idx + MIN_SIZE_BITS);
     }
 
   public:
@@ -86,7 +93,7 @@ namespace snmalloc
           // Add to next level cache
           size *= 2;
           addr = Rep::align_down(addr, size);
-          if (size == bits::one_at_bit(MAX_SIZE_BITS))
+          if (size == MAX_SIZE)
           {
             // Invariant should be checked on all non-tail return paths.
             // Holds trivially here with current design.
@@ -114,37 +121,48 @@ namespace snmalloc
      *
      * Return Rep::null if this cannot be satisfied.
      */
-    typename Rep::Contents remove_block(size_t size)
+    std::pair<typename Rep::Contents, size_t> remove_block(SizeSpec spec)
     {
       invariant();
-      auto idx = to_index(size);
-      if (idx >= empty_at_or_above)
-        return Rep::null;
 
-      auto addr = trees[idx].remove_min();
-      if (addr != Rep::null)
+      size_t curr_index = bits::min(to_index(spec.desired), empty_at_or_above);
+      size_t min_index = to_index(spec.required);
+      if (curr_index < min_index)
+        return {Rep::null, 0};
+
+      while (true)
       {
-        validate_block(addr, size);
-        return addr;
+        auto addr = trees[curr_index].remove_min();
+        if (addr != Rep::null)
+        {
+          validate_block(addr, from_index(curr_index));
+          return {addr, from_index(curr_index)};
+        }
+        if (curr_index == min_index)
+          break;
+
+        curr_index--;
       }
 
-      if (size * 2 == bits::one_at_bit(MAX_SIZE_BITS))
-        // Too big for this buddy allocator
-        return Rep::null;
+      auto size = spec.desired;
 
-      auto bigger = remove_block(size * 2);
+      if (size * 2 == MAX_SIZE)
+        // Too big for this buddy allocator
+        return {Rep::null, 0};
+
+      auto [bigger,_] = remove_block({size * 2});
       if (bigger == Rep::null)
       {
-        empty_at_or_above = idx;
+        empty_at_or_above = to_index(size);
         invariant();
-        return Rep::null;
+        return {Rep::null, 0};
       }
 
       auto second = Rep::offset(bigger, size);
 
       // Split large block
       add_block(second, size);
-      return bigger;
+      return {bigger, size};
     }
 
     typename std::pair<typename Rep::Contents, size_t> remove_largest()
@@ -154,7 +172,7 @@ namespace snmalloc
         auto addr = trees[idx - 1].remove_max();
         if (addr != Rep::null)
         {
-          auto size = bits::one_at_bit(idx + MIN_SIZE_BITS - 1);
+          auto size = from_index(idx - 1);
           validate_block(addr, size);
           return {addr, size};
         }
@@ -168,7 +186,7 @@ namespace snmalloc
       size_t result = 0;
       for (size_t idx = 0; idx < trees.size(); idx++)
       {
-        auto size = bits::one_at_bit(idx + MIN_SIZE_BITS);
+        auto size = from_index(idx);
         auto count = trees[idx].count();
         result += size * count;
       }

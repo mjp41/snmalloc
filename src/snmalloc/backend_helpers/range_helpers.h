@@ -4,6 +4,24 @@
 
 namespace snmalloc
 {
+  struct SizeSpec
+  {
+    size_t desired;
+    size_t required;
+
+    SizeSpec(size_t size) : SizeSpec(size, size) {}
+
+    SizeSpec(size_t desired, size_t required)
+    : desired(desired), required(required)
+    {}
+  };
+
+  struct Range
+  {
+    capptr::Arena<void> base;
+    size_t length;
+  };
+
   template<size_t MIN_BITS, SNMALLOC_CONCEPT(capptr::IsBound) B, typename F>
   size_t range_to_pow_2_blocks(CapPtr<void, B> base, size_t length_orig, F f)
   {

@@ -28,15 +28,15 @@ namespace snmalloc
 
       constexpr Type() = default;
 
-      CapPtr<void, ChunkBounds> alloc_range(size_t size)
+      Range alloc_range(SizeSpec size)
       {
 #ifdef SNMALLOC_TRACING
-        message<1024>("Call alloc_range({}) on {}", size, RangeName);
+        message<1024>("Call alloc_range({},{}) on {}", size.desired, size.required, RangeName);
 #endif
         auto range = parent.alloc_range(size);
 #ifdef SNMALLOC_TRACING
         message<1024>(
-          "{} = alloc_range({}) in {}", range.unsafe_ptr(), size, RangeName);
+          "{},{} = alloc_range({},{}) in {}", range.base.unsafe_ptr(), range.length, size.desired, size.required, RangeName);
 #endif
         return range;
       }

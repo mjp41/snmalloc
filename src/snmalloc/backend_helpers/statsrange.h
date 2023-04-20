@@ -29,16 +29,16 @@ namespace snmalloc
 
       constexpr Type() = default;
 
-      CapPtr<void, ChunkBounds> alloc_range(size_t size)
+      Range alloc_range(SizeSpec size)
       {
         auto result = parent.alloc_range(size);
-        if (result != nullptr)
+        if (result.base != nullptr)
         {
-          auto prev = current_usage.fetch_add(size);
+          auto prev = current_usage.fetch_add(result.length);
           auto curr = peak_usage.load();
-          while (curr < prev + size)
+          while (curr < prev + result.length)
           {
-            if (peak_usage.compare_exchange_weak(curr, prev + size))
+            if (peak_usage.compare_exchange_weak(curr, prev + result.length))
               break;
           }
         }

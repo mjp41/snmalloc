@@ -193,14 +193,14 @@ namespace snmalloc
           });
       }
 
-      CapPtr<void, ChunkBounds> refill(size_t size)
+      Range refill(size_t size)
       {
-        auto refill = parent.alloc_range(MIN_CHUNK_SIZE);
+        auto refill = parent.alloc_range({MIN_CHUNK_SIZE});
 
-        if (refill != nullptr)
-          add_range(pointer_offset(refill, size), MIN_CHUNK_SIZE - size);
+        if (refill.base != nullptr)
+          add_range(pointer_offset(refill.base, size), MIN_CHUNK_SIZE - size);
 
-        return refill;
+        return { refill.base, size };
       }
 
     public:
@@ -211,35 +211,37 @@ namespace snmalloc
 
       constexpr Type() = default;
 
-      CapPtr<void, ChunkBounds> alloc_range(size_t size)
+      Range alloc_range(SizeSpec size)
       {
-        if (size >= MIN_CHUNK_SIZE)
+        SNMALLOC_ASSERT(size.required == size.desired);
+
+        if (size.required >= MIN_CHUNK_SIZE)
           return parent.alloc_range(size);
 
-        auto result = buddy_small.remove_block(size);
+        auto [result, _] = buddy_small.remove_block({size.required});
         if (result != nullptr)
         {
           result->left = nullptr;
           result->right = nullptr;
-          return result.template as_reinterpret<void>();
+          return {result.template as_reinterpret<void>(), size.required};
         }
-        return refill(size);
+        return refill(size.required);
       }
 
       CapPtr<void, ChunkBounds> alloc_range_with_leftover(size_t size)
       {
         auto rsize = bits::next_pow2(size);
 
-        auto result = alloc_range(rsize);
+        auto result = alloc_range({rsize});
 
-        if (result == nullptr)
+        if (result.base == nullptr)
           return nullptr;
 
-        auto remnant = pointer_offset(result, size);
+        auto remnant = pointer_offset(result.base, size);
 
         add_range(remnant, rsize - size);
 
-        return result.template as_reinterpret<void>();
+        return result.base.template as_reinterpret<void>();
       }
 
       void dealloc_range(CapPtr<void, ChunkBounds> base, size_t size)

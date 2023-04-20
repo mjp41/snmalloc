@@ -57,7 +57,7 @@ namespace snmalloc
           GlobalMetaRange::ConcurrencySafe,
           "Global meta data range needs to be concurrency safe.");
         GlobalMetaRange global_state;
-        p = global_state.alloc_range(bits::next_pow2(size));
+        p = global_state.alloc_range({bits::next_pow2(size)}).base;
       }
 
       if (p == nullptr)
@@ -85,7 +85,7 @@ namespace snmalloc
       SNMALLOC_ASSERT(bits::is_pow2(size));
       SNMALLOC_ASSERT(size >= MIN_CHUNK_SIZE);
 
-      auto meta_cap = local_state.get_meta_range().alloc_range(SizeofMetadata);
+      auto meta_cap = local_state.get_meta_range().alloc_range({SizeofMetadata}).base;
 
       auto meta = meta_cap.template as_reinterpret<SlabMetadata>().unsafe_ptr();
 
@@ -95,7 +95,7 @@ namespace snmalloc
         return {nullptr, nullptr};
       }
 
-      capptr::Arena<void> p = local_state.get_object_range()->alloc_range(size);
+      capptr::Arena<void> p = local_state.get_object_range()->alloc_range({size}).base;
 
 #ifdef SNMALLOC_TRACING
       message<1024>("Alloc chunk: {} ({})", p.unsafe_ptr(), size);

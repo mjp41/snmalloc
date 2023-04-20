@@ -24,16 +24,16 @@ namespace snmalloc
 
       using ChunkBounds = typename ParentRange::ChunkBounds;
 
-      CapPtr<void, ChunkBounds> alloc_range(size_t size)
+      Range alloc_range(SizeSpec size)
       {
-        auto base = parent.alloc_range(size);
+        auto range = parent.alloc_range(size);
 
-        if (base != nullptr)
+        if (range.base != nullptr)
         {
-          Pagemap::register_range(base, size);
+          Pagemap::register_range(range.base, range.length);
         }
 
-        return base;
+        return range;
       }
     };
   };

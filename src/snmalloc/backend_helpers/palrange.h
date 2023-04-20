@@ -18,33 +18,33 @@ namespace snmalloc
 
     constexpr PalRange() = default;
 
-    capptr::Arena<void> alloc_range(size_t size)
+    Range alloc_range(SizeSpec size)
     {
-      if (bits::next_pow2_bits(size) >= bits::BITS - 1)
+      if (bits::next_pow2_bits(size.required) >= bits::BITS - 1)
       {
-        return nullptr;
+        return {nullptr, 0};
       }
 
       if constexpr (pal_supports<AlignedAllocation, PAL>)
       {
-        SNMALLOC_ASSERT(size >= PAL::minimum_alloc_size);
+        SNMALLOC_ASSERT(size.required >= PAL::minimum_alloc_size);
         auto result = capptr::Arena<void>::unsafe_from(
-          PAL::template reserve_aligned<false>(size));
+          PAL::template reserve_aligned<false>(size.required));
 
 #ifdef SNMALLOC_TRACING
-        message<1024>("Pal range alloc: {} ({})", result.unsafe_ptr(), size);
+        message<1024>("Pal range alloc: {} ({})", result.unsafe_ptr(), size.required);
 #endif
-        return result;
+        return {result, size.required};
       }
       else
       {
-        auto result = capptr::Arena<void>::unsafe_from(PAL::reserve(size));
+        auto result = capptr::Arena<void>::unsafe_from(PAL::reserve(size.required));
 
 #ifdef SNMALLOC_TRACING
-        message<1024>("Pal range alloc: {} ({})", result.unsafe_ptr(), size);
+        message<1024>("Pal range alloc: {} ({})", result.unsafe_ptr(), size.required);
 #endif
 
-        return result;
+        return {result, size.required};
       }
     }
   };

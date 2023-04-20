@@ -32,7 +32,7 @@ namespace snmalloc
 
       constexpr Type() = default;
 
-      CapPtr<void, ChunkBounds> alloc_range(size_t size)
+      Range alloc_range(SizeSpec size)
       {
         return parent->alloc_range(size);
       }

@@ -25,16 +25,22 @@ namespace snmalloc
 
       constexpr Type() = default;
 
-      CapPtr<void, ChunkBounds> alloc_range(size_t size)
+      Range alloc_range(SizeSpec size)
       {
         SNMALLOC_ASSERT_MSG(
-          (size % PAL::page_size) == 0,
+          (size.desired % PAL::page_size) == 0,
           "size ({}) must be a multiple of page size ({})",
-          size,
+          size.desired,
           PAL::page_size);
+        SNMALLOC_ASSERT_MSG(
+          (size.required % PAL::page_size) == 0,
+          "size ({}) must be a multiple of page size ({})",
+          size.required,
+          PAL::page_size);
+
         auto range = parent.alloc_range(size);
-        if (range != nullptr)
-          PAL::template notify_using<NoZero>(range.unsafe_ptr(), size);
+        if (range.base != nullptr)
+          PAL::template notify_using<NoZero>(range.base.unsafe_ptr(), range.length);
         return range;
       }
 
