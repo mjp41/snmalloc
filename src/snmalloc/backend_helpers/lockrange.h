@@ -35,8 +35,16 @@ namespace snmalloc
 
       Range alloc_range(SizeSpec size)
       {
+        Range r;
+        bool fast = try_flag_lock(spin_lock, [this, size, &r](){
+          r = parent.alloc_range(size);
+        });
+        if (fast)
+          return r;
+        
+        // Under contention force the desired request to avoid further contention.
         FlagLock lock(spin_lock);
-        return parent.alloc_range(size);
+        return parent.alloc_range({size.desired});
       }
 
       bool dealloc_range(CapPtr<void, ChunkBounds> base, size_t size, bool force)
