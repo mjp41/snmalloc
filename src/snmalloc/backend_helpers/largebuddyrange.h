@@ -273,8 +273,8 @@ namespace snmalloc
             // It is very unlikely to hit provided_total == 0 during execution of a thread,
             // so this is probably the thread is shutting down, return all memory at
             // this point.
-            if (provided_total == 0)
-              threshold = 0;
+            // if (provided_total == 0)
+            //   threshold = 0;
             while (requested_total > threshold)
             {
               invariant();
