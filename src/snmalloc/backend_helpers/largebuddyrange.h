@@ -338,7 +338,7 @@ namespace snmalloc
           // REFILL_SIZE, REFILL_SIZE, ... Hence if this if they are coming from
           // a contiguous aligned range, then they could be consolidated.  This
           // depends on the ParentRange behaviour.
-          size_t refill_size = bits::min(REFILL_SIZE, requested_total);
+          size_t refill_size = bits::min(REFILL_SIZE, requested_total*2);
           refill_size = bits::max(refill_size, MIN_REFILL_SIZE);
           refill_size = bits::max(refill_size, size.required);
           refill_size = bits::next_pow2(refill_size);
