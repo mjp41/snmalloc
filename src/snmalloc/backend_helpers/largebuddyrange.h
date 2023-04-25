@@ -275,26 +275,26 @@ namespace snmalloc
             // this point.
             // if (provided_total == 0)
             //   threshold = 0;
-            while (requested_total > threshold)
-            {
-              invariant();
-              auto [ptr, size] = buddy_large.remove_largest();
-              auto capptr = capptr::Arena<void>::unsafe_from(reinterpret_cast<void*>(ptr));
-              if (capptr == nullptr)
-              {
-                message<1024>("Error no memory. Requested total = {}, provided total = {}  @{}", requested_total, provided_total, this);
-                error("Unreachable.");
-              }
-              auto result = parent_dealloc_range(
-                capptr,
-                size,
-                false);
-              if (!result)
-              {
-                buddy_large.add_block(ptr, size);
-                break;
-              }
-            }
+            // while (requested_total > threshold)
+            // {
+            //   invariant();
+            //   auto [ptr, size] = buddy_large.remove_largest();
+            //   auto capptr = capptr::Arena<void>::unsafe_from(reinterpret_cast<void*>(ptr));
+            //   if (capptr == nullptr)
+            //   {
+            //     message<1024>("Error no memory. Requested total = {}, provided total = {}  @{}", requested_total, provided_total, this);
+            //     error("Unreachable.");
+            //   }
+            //   auto result = parent_dealloc_range(
+            //     capptr,
+            //     size,
+            //     false);
+            //   if (!result)
+            //   {
+            //     buddy_large.add_block(ptr, size);
+            //     break;
+            //   }
+            // }
           }
         }
         else
