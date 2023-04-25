@@ -16,7 +16,10 @@ namespace snmalloc
     : SizeSpec(desired, required, desired) {}
 
     SizeSpec(size_t desired, size_t required, size_t maximum) : desired(desired), required(required), maximum(maximum)
-    {}
+    {
+      SNMALLOC_ASSERT(desired >= required);
+      SNMALLOC_ASSERT(maximum >= desired);
+    }
   };
 
   struct Range

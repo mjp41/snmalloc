@@ -342,8 +342,9 @@ namespace snmalloc
           refill_size = bits::max(refill_size, MIN_REFILL_SIZE);
           refill_size = bits::max(refill_size, size.required);
           refill_size = bits::next_pow2(refill_size);
+          size_t max_size = bits::max(REFILL_SIZE, size.required);
 
-          auto refill_range = parent_alloc_range({refill_size, size.required, REFILL_SIZE});
+          auto refill_range = parent_alloc_range({refill_size, size.required, max_size});
           if (refill_range.base != nullptr)
           {
             add_range(
