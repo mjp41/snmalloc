@@ -120,6 +120,12 @@ namespace snmalloc
       return meta_range;
     }
 
+    void flush()
+    {
+      object_range.flush();
+      meta_range.flush();
+    }
+
     // Create global range that can service small meta-data requests.
     // Don't want to add the SmallBuddyRange to the CentralMetaRange as that
     // would require committing memory inside the main global lock.
