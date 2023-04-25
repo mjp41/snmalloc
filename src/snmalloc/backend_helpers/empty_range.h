@@ -19,5 +19,8 @@ namespace snmalloc
     {
       return nullptr;
     }
+
+    void flush()
+    {}
   };
 } // namespace snmalloc

@@ -35,6 +35,11 @@ namespace snmalloc
 
         return range;
       }
+
+      void flush()
+      {
+        parent.flush();
+      }
     };
   };
 } // namespace snmalloc

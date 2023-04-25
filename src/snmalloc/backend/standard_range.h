@@ -85,5 +85,10 @@ namespace snmalloc
       // Use the object range to service meta-data requests.
       return object_range;
     }
+
+    void flush()
+    {
+      object_range.flush();
+    }
   };
 } // namespace snmalloc

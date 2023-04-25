@@ -58,6 +58,11 @@ namespace snmalloc
 #endif
         return result;
       }
+
+      void flush()
+      {
+        parent.flush();
+      }
     };
   };
 } // namespace snmalloc

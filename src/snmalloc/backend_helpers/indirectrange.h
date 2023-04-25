@@ -42,6 +42,11 @@ namespace snmalloc
         return parent->dealloc_range(base, size, force);
       }
 
+      void flush()
+      {
+        parent.flush();
+      }
+
       /**
        * Points the parent reference to the given range.
        */

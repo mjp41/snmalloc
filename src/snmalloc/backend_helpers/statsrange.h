@@ -62,6 +62,11 @@ namespace snmalloc
       {
         return peak_usage.load();
       }
+
+      void flush()
+      {
+        parent.flush();
+      }
     };
   };
 

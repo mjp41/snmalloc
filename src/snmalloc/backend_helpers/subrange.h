@@ -47,6 +47,11 @@ namespace snmalloc
 
         return {pointer_offset(overblock, offset), sub_size};
       }
+
+      void flush()
+      {
+        parent.flush();
+      }
     };
   };
 } // namespace snmalloc

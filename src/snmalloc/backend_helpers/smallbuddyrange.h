@@ -250,6 +250,11 @@ namespace snmalloc
         add_range(base, size);
         return true;
       }
+
+      void flush()
+      {
+        parent.flush();
+      }
     };
   };
 } // namespace snmalloc

@@ -47,5 +47,9 @@ namespace snmalloc
         return {result, size.required};
       }
     }
+
+    void flush()
+    {
+    }
   };
 } // namespace snmalloc

@@ -233,6 +233,24 @@ namespace snmalloc
        */
       Buddy<BuddyChunkRep<Pagemap>, MIN_CHUNK_BITS, MAX_SIZE_BITS> buddy_large;
 
+      void invariant()
+      {
+#ifndef NDEBUG
+        size_t contains_bytes = buddy_large.contains_bytes();
+        if (requested_total != (provided_total + contains_bytes))
+        {
+          message<1024>(
+            "LargeBuddyInvariant failed: {} - ({} + {}) = {} @{}",
+            requested_total,
+            provided_total,
+            contains_bytes,
+            requested_total - (provided_total + contains_bytes),
+            this);
+          abort();
+        }
+#endif
+      }
+
       /**
        * The parent might not support deallocation if this buddy allocator
        * covers the whole range.  Uses template insanity to make this work.
@@ -266,35 +284,6 @@ namespace snmalloc
           if (overflow != nullptr)
           {
             parent_dealloc_range(overflow, bits::one_at_bit(MAX_SIZE_BITS), true);
-          }
-          else
-          {
-            // auto threshold = bits::max(provided_total * 8, REFILL_SIZE);
-            // It is very unlikely to hit provided_total == 0 during execution of a thread,
-            // so this is probably the thread is shutting down, return all memory at
-            // this point.
-            // if (provided_total == 0)
-            //   threshold = 0;
-            // while (requested_total > threshold)
-            // {
-            //   invariant();
-            //   auto [ptr, size] = buddy_large.remove_largest();
-            //   auto capptr = capptr::Arena<void>::unsafe_from(reinterpret_cast<void*>(ptr));
-            //   if (capptr == nullptr)
-            //   {
-            //     message<1024>("Error no memory. Requested total = {}, provided total = {}  @{}", requested_total, provided_total, this);
-            //     error("Unreachable.");
-            //   }
-            //   auto result = parent_dealloc_range(
-            //     capptr,
-            //     size,
-            //     false);
-            //   if (!result)
-            //   {
-            //     buddy_large.add_block(ptr, size);
-            //     break;
-            //   }
-            // }
           }
         }
         else
@@ -464,22 +453,32 @@ namespace snmalloc
         return true;
       }
 
-      void invariant()
+      void flush()
       {
-#ifndef NDEBUG
-        size_t contains_bytes = buddy_large.contains_bytes();
-        if (requested_total != (provided_total + contains_bytes))
+        if constexpr (MAX_SIZE_BITS != (bits::BITS - 1))
         {
-          message<1024>(
-            "LargeBuddyInvariant failed: {} - ({} + {}) = {} @{}",
-            requested_total,
-            provided_total,
-            contains_bytes,
-            requested_total - (provided_total + contains_bytes),
-            this);
-          abort();
+          while (requested_total > provided_total)
+          {
+            invariant();
+            auto [ptr, size] = buddy_large.remove_largest();
+            auto capptr = capptr::Arena<void>::unsafe_from(reinterpret_cast<void*>(ptr));
+            if (capptr == nullptr)
+            {
+              message<1024>("Error no memory. Requested total = {}, provided total = {}  @{}", requested_total, provided_total, this);
+              error("Unreachable.");
+            }
+            auto result = parent_dealloc_range(
+              capptr,
+              size,
+              false);
+            if (!result)
+            {
+              buddy_large.add_block(ptr, size);
+              break;
+            }
+          }
+          parent.flush();
         }
-#endif
       }
     };
   };

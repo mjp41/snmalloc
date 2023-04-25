@@ -59,6 +59,12 @@ namespace snmalloc
           parent.dealloc_range(base, size, true);
         }); 
       }
+
+      void flush()
+      {
+        FlagLock lock(spin_lock);
+        parent.flush();
+      }
     };
   };
 } // namespace snmalloc

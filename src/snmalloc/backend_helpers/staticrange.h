@@ -37,6 +37,11 @@ namespace snmalloc
       {
         return parent.dealloc_range(base, size, force);
       }
+
+      void flush()
+      {
+        // Don't do anything as parent is shared.
+      }
     };
   };
 } // namespace snmalloc

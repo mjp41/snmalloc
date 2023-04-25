@@ -879,6 +879,8 @@ namespace snmalloc
         }
       });
 
+      local_state->flush();
+
       return posted;
     }
 
