@@ -248,7 +248,7 @@ namespace snmalloc
   SNMALLOC_FAST_PATH_INLINE size_t
   pointer_diff(const void* base, const void* cursor)
   {
-    SNMALLOC_ASSERT(cursor >= base);
+    SNMALLOC_ASSERT_MSG(cursor >= base, "{} >= {}", cursor, base);
     return static_cast<size_t>(
       static_cast<const char*>(cursor) - static_cast<const char*>(base));
   }
