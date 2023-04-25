@@ -271,7 +271,7 @@ namespace snmalloc
     /**
      * Append a string to the buffer.
      */
-    void append(std::string_view sv)
+    void append(const std::string_view sv)
     {
       for (auto c : sv)
       {
@@ -306,7 +306,7 @@ namespace snmalloc
     /**
      * Append a raw pointer to the buffer as a hex string.
      */
-    void append(void* ptr)
+    void append(const void* ptr)
     {
       append(static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(ptr)));
       // TODO: CHERI bits.
