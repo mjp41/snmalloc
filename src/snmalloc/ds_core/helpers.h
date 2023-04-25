@@ -269,6 +269,14 @@ namespace snmalloc
     }
 
     /**
+     * Append a C string to the message. 
+     */
+    void append(const char * s)
+    {
+      append(std::string_view(s));
+    }
+
+    /**
      * Append a string to the buffer.
      */
     void append(const std::string_view sv)
