@@ -8,11 +8,14 @@ namespace snmalloc
   {
     size_t desired;
     size_t required;
+    size_t maximum;
 
     SizeSpec(size_t size) : SizeSpec(size, size) {}
 
     SizeSpec(size_t desired, size_t required)
-    : desired(desired), required(required)
+    : SizeSpec(desired, required, desired) {}
+
+    SizeSpec(size_t desired, size_t required, size_t maximum) : desired(desired), required(required), maximum(maximum)
     {}
   };
 

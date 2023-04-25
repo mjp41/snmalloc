@@ -42,9 +42,9 @@ namespace snmalloc
         if (fast)
           return r;
         
-        // Under contention force the desired request to avoid further contention.
+        // Under contention force the maximum request to avoid further contention.
         FlagLock lock(spin_lock);
-        return parent.alloc_range({size.desired});
+        return parent.alloc_range({size.maximum});
       }
 
       bool dealloc_range(CapPtr<void, ChunkBounds> base, size_t size, bool force)
