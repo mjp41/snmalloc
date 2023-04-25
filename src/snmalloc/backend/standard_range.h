@@ -51,7 +51,7 @@ namespace snmalloc
       Stats,
       LargeBuddyRange<
         LocalCacheSizeBits,
-        LocalCacheSizeBits + 4,
+        LocalCacheSizeBits,
         Pagemap,
         page_size_bits>>;
 
