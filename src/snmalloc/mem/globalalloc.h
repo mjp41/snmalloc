@@ -153,7 +153,17 @@ namespace snmalloc
   template<SNMALLOC_CONCEPT(IsConfig) Config>
   inline static void print_alloc_stats()
   {
+    static std::atomic<size_t> dump{0};
+
+    auto l_dump = dump++;
+    if (l_dump == 0)
+    {
+      message<1024>("snmalloc_allocs,dumpid,sizeclass,size,allocated,deallocated,in_use,bytes");
+      message<1024>("snmalloc_totals,dumpid,backend bytes,peak backend bytes,requested");
+    }
+
     auto stats = snmalloc::get_stats<Config>();
+    size_t total_live{0}; 
     for (size_t i = 0; i < snmalloc::SIZECLASS_REP_SIZE; i++)
     {
       auto sc = snmalloc::sizeclass_t::from_raw(i);
@@ -164,7 +174,10 @@ namespace snmalloc
       auto size =
         snmalloc::sizeclass_full_to_size(snmalloc::sizeclass_t::from_raw(i));
       auto in_use = allocated - deallocated;
-      snmalloc::message<1024>("SNMALLOCallocs,{},{},{},{},{}", i, size, allocated, deallocated, in_use);
+      auto amount = in_use * size;
+      total_live += amount;
+      snmalloc::message<1024>("snmalloc_allocs,{},{},{},{},{},{},{}", l_dump, i, size, allocated, deallocated, in_use,amount);
     }
+    snmalloc::message<1024>("snmalloc_totals,{},{},{},{}", l_dump, Config::Backend::get_current_usage(), Config::Backend::get_peak_usage(), total_live);
   }
 } // namespace snmalloc
