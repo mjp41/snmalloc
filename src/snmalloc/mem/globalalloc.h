@@ -137,24 +137,23 @@ namespace snmalloc
     }
   }
 
-  template<SNMALLOC_CONCEPT(ConceptBackendGlobals) SharedStateHandle>
+  template<SNMALLOC_CONCEPT(IsConfig) Config>
   inline static AllocStats get_stats()
   {
-    auto alloc = AllocPool<SharedStateHandle>::iterate();
+    auto alloc = AllocPool<Config>::iterate();
     AllocStats stats;
     while (alloc != nullptr)
     {
       stats += alloc->get_stats();
-      alloc = AllocPool<SharedStateHandle>::iterate(alloc);
+      alloc = AllocPool<Config>::iterate(alloc);
     }
     return stats;
   }
 
-  template<SNMALLOC_CONCEPT(ConceptBackendGlobals) SharedStateHandle>
+  template<SNMALLOC_CONCEPT(IsConfig) Config>
   inline static void print_alloc_stats()
   {
-#ifndef SNMALLOC_PASS_THROUGH // This test depends on snmalloc internals
-    auto stats = snmalloc::get_stats<SharedStateHandle>();
+    auto stats = snmalloc::get_stats<Config>();
     for (size_t i = 0; i < snmalloc::SIZECLASS_REP_SIZE; i++)
     {
       auto sc = snmalloc::sizeclass_t::from_raw(i);
@@ -167,6 +166,5 @@ namespace snmalloc
       auto in_use = allocated - deallocated;
       snmalloc::message<1024>("SNMALLOCallocs,{},{},{},{},{}", i, size, allocated, deallocated, in_use);
     }
-#endif
   }
 } // namespace snmalloc
