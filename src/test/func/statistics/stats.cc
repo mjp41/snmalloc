@@ -28,7 +28,7 @@ void debug_check_empty_1()
 
   snmalloc::print_alloc_stats<snmalloc::StandardConfig>();
 
-   a.dealloc(r);
+  a.dealloc(r);
 
   snmalloc::print_alloc_stats<snmalloc::StandardConfig>();
 

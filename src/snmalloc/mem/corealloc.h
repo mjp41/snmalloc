@@ -370,7 +370,7 @@ namespace snmalloc
         auto start = clear_slab(meta, sizeclass);
 
         stats[sizeclass].slabs_deallocated++;
-        
+
         Config::Backend::dealloc_chunk(
           get_backend_local_state(),
           *meta,

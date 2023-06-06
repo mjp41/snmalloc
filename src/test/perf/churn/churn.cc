@@ -72,11 +72,13 @@ int main()
       // std::endl; std::cout << "Running threads:     " << running <<
       // std::endl; std::cout << "Index:               " << count << std::endl;
       // std::cout << "------------------------------------------" << std::endl;
-      std::cout << count << "," << snmalloc::Alloc::Config::Backend::get_peak_usage() << ","
-                << snmalloc::Alloc::Config::Backend::get_current_usage() << "," << requests.get_curr()
-                << "," << requests.get_peak() << ","
+      std::cout << count << ","
+                << snmalloc::Alloc::Config::Backend::get_peak_usage() << ","
+                << snmalloc::Alloc::Config::Backend::get_current_usage() << ","
+                << requests.get_curr() << "," << requests.get_peak() << ","
                 << snmalloc::RemoteDeallocCache::remote_inflight.get_peak()
-                << "," << snmalloc::RemoteDeallocCache::remote_inflight.get_curr()
+                << ","
+                << snmalloc::RemoteDeallocCache::remote_inflight.get_curr()
                 << std::endl;
       snmalloc::print_alloc_stats<snmalloc::Alloc::Config>();
     }

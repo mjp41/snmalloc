@@ -1,6 +1,7 @@
+#include "defines.h"
+
 #include <atomic>
 #include <cstddef>
-#include "defines.h"
 
 namespace snmalloc
 {
@@ -28,8 +29,9 @@ namespace snmalloc
     void decrease(size_t amount)
     {
       size_t prev = curr.fetch_sub(amount);
-// TODO Fix this to be true.
-//      SNMALLOC_ASSERT_MSG(prev >= amount, "prev = {}, amount = {}", prev, amount);
+      // TODO Fix this to be true.
+      //      SNMALLOC_ASSERT_MSG(prev >= amount, "prev = {}, amount = {}",
+      //      prev, amount);
       UNUSED(prev);
     }
 

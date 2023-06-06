@@ -1,12 +1,14 @@
 #include "../ds_core/ds_core.h"
-#include <array>
 #include "sizeclasstable.h"
+
+#include <array>
 
 namespace snmalloc
 {
   class MonotoneStat
   {
     size_t value{0};
+
   public:
     void operator++(int)
     {
@@ -53,7 +55,8 @@ namespace snmalloc
       for (size_t i = 0; i < SIZECLASS_REP_SIZE; i++)
       {
         sizeclass[i].objects_allocated += other.sizeclass[i].objects_allocated;
-        sizeclass[i].objects_deallocated += other.sizeclass[i].objects_deallocated;
+        sizeclass[i].objects_deallocated +=
+          other.sizeclass[i].objects_deallocated;
         sizeclass[i].slabs_allocated += other.sizeclass[i].slabs_allocated;
         sizeclass[i].slabs_deallocated += other.sizeclass[i].slabs_deallocated;
       }

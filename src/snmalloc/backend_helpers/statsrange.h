@@ -17,7 +17,7 @@ namespace snmalloc
     {
       using ContainsParent<ParentRange>::parent;
 
-    static inline Stat usage{};
+      static inline Stat usage{};
 
     public:
       static constexpr bool Aligned = ParentRange::Aligned;

@@ -95,8 +95,11 @@ namespace snmalloc
       typename Config,
       typename Slowpath,
       typename Domesticator>
-    SNMALLOC_FAST_PATH capptr::Alloc<void>
-    alloc(Domesticator domesticate, AllocStats& stats, size_t size, Slowpath slowpath)
+    SNMALLOC_FAST_PATH capptr::Alloc<void> alloc(
+      Domesticator domesticate,
+      AllocStats& stats,
+      size_t size,
+      Slowpath slowpath)
     {
       auto& key = entropy.get_free_list_key();
       smallsizeclass_t sizeclass = size_to_sizeclass(size);

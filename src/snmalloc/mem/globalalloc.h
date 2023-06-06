@@ -87,7 +87,8 @@ namespace snmalloc
       }
     }
 
-    if (result == nullptr  && RemoteDeallocCache::remote_inflight.get_curr() != 0)
+    if (
+      result == nullptr && RemoteDeallocCache::remote_inflight.get_curr() != 0)
       error("ERROR: RemoteDeallocCache::remote_inflight != 0");
 
     if (result != nullptr)
@@ -158,8 +159,12 @@ namespace snmalloc
     auto l_dump = dump++;
     if (l_dump == 0)
     {
-      message<1024>("snmalloc_allocs,dumpid,sizeclass,size,allocated,deallocated,in_use,bytes,slabs allocated,slabs deallocated,slabs in_use,slabs bytes");
-      message<1024>("snmalloc_totals,dumpid,backend bytes,peak backend bytes,requested,slabs requested bytes");
+      message<1024>(
+        "snmalloc_allocs,dumpid,sizeclass,size,allocated,deallocated,in_use,"
+        "bytes,slabs allocated,slabs deallocated,slabs in_use,slabs bytes");
+      message<1024>(
+        "snmalloc_totals,dumpid,backend bytes,peak backend "
+        "bytes,requested,slabs requested bytes");
     }
 
     auto stats = snmalloc::get_stats<Config>();
@@ -183,8 +188,26 @@ namespace snmalloc
       auto amount_slabs = in_use_slabs * slab_size;
       total_live_slabs += amount_slabs;
 
-      snmalloc::message<1024>("snmalloc_allocs,{},{},{},{},{},{},{},{},{},{},{}", l_dump, i, size, allocated, deallocated, in_use, amount, slabs_allocated, slabs_deallocated, in_use_slabs, amount_slabs);
+      snmalloc::message<1024>(
+        "snmalloc_allocs,{},{},{},{},{},{},{},{},{},{},{}",
+        l_dump,
+        i,
+        size,
+        allocated,
+        deallocated,
+        in_use,
+        amount,
+        slabs_allocated,
+        slabs_deallocated,
+        in_use_slabs,
+        amount_slabs);
     }
-    snmalloc::message<1024>("snmalloc_totals,{},{},{},{},{}", l_dump, Config::Backend::get_current_usage(), Config::Backend::get_peak_usage(), total_live, total_live_slabs);
+    snmalloc::message<1024>(
+      "snmalloc_totals,{},{},{},{},{}",
+      l_dump,
+      Config::Backend::get_current_usage(),
+      Config::Backend::get_peak_usage(),
+      total_live,
+      total_live_slabs);
   }
 } // namespace snmalloc
