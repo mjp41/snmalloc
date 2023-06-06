@@ -26,11 +26,11 @@ void debug_check_empty_1()
     abort();
   }
 
-  snmalloc::print_alloc_stats<snmalloc::Globals>();
+  snmalloc::print_alloc_stats<snmalloc::StandardConfig>();
 
    a.dealloc(r);
 
-  snmalloc::print_alloc_stats<snmalloc::Globals>();
+  snmalloc::print_alloc_stats<snmalloc::StandardConfig>();
 
   snmalloc::debug_check_empty<snmalloc::StandardConfig>(&result);
   if (result != true)
@@ -53,7 +53,7 @@ void debug_check_empty_1()
     abort();
   }
 
-  snmalloc::print_alloc_stats<snmalloc::Globals>();
+  snmalloc::print_alloc_stats<snmalloc::StandardConfig>();
 
   a.dealloc(r);
 
@@ -67,7 +67,6 @@ void debug_check_empty_1()
   }
 
   snmalloc::print_alloc_stats<snmalloc::StandardConfig>();
-#endif
 }
 
 template<size_t size>

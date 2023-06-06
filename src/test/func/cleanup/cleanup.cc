@@ -33,9 +33,9 @@ void thread_body()
 void monitor_body()
 {
    for (int i = 0; i < 10000; i++) { 
-    std::cout << "Current: " << snmalloc::Alloc::StateHandle::get_current_usage() << std::endl;
-    std::cout << "Peak   : " << snmalloc::Alloc::StateHandle::get_peak_usage() << std::endl;
-    std::cout << "Allocs : " << snmalloc::Alloc::StateHandle::pool().get_count() << std::endl;
+    std::cout << "Current: " << snmalloc::Alloc::Config::Backend::get_current_usage() << std::endl;
+    std::cout << "Peak   : " << snmalloc::Alloc::Config::Backend::get_peak_usage() << std::endl;
+    std::cout << "Allocs : " << snmalloc::Alloc::Config::pool().get_count() << std::endl;
     std::cout << "--------------------------------------------" << std::endl;
     std::this_thread::sleep_for(std::chrono::seconds(1));
    }
