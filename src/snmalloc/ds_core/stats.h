@@ -80,7 +80,8 @@ namespace snmalloc
 
     void operator+=(const MonotoneLocalStat& other)
     {
-      value.fetch_add(other.value.load(std::memory_order_relaxed), std::memory_order_relaxed);
+      value.fetch_add(
+        other.value.load(std::memory_order_relaxed), std::memory_order_relaxed);
     }
 
     size_t operator*()
