@@ -164,7 +164,8 @@ namespace snmalloc
         "bytes,slabs allocated,slabs deallocated,slabs in_use,slabs bytes");
       message<1024>(
         "snmalloc_totals,dumpid,backend bytes,peak backend "
-        "bytes,requested,slabs requested bytes,remote inflight bytes,allocator count");
+        "bytes,requested,slabs requested bytes,remote inflight bytes,allocator "
+        "count");
     }
 
     auto stats = snmalloc::get_stats<Config>();
