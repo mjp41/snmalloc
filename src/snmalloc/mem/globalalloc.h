@@ -164,7 +164,7 @@ namespace snmalloc
         "bytes,slabs allocated,slabs deallocated,slabs in_use,slabs bytes");
       message<1024>(
         "snmalloc_totals,dumpid,backend bytes,peak backend "
-        "bytes,requested,slabs requested bytes");
+        "bytes,requested,slabs requested bytes,remote inflight bytes,allocator count");
     }
 
     auto stats = snmalloc::get_stats<Config>();
@@ -203,11 +203,13 @@ namespace snmalloc
         amount_slabs);
     }
     snmalloc::message<1024>(
-      "snmalloc_totals,{},{},{},{},{}",
+      "snmalloc_totals,{},{},{},{},{},{},{}",
       l_dump,
       Config::Backend::get_current_usage(),
       Config::Backend::get_peak_usage(),
       total_live,
-      total_live_slabs);
+      total_live_slabs,
+      RemoteDeallocCache::remote_inflight.get_curr(),
+      Config::pool().get_count());
   }
 } // namespace snmalloc
