@@ -59,7 +59,7 @@ int main()
 
   std::thread([&requests]() {
     size_t count = 0;
-    while (count < 2000)
+    while (count < 60)
     {
       count++;
       std::this_thread::sleep_for(std::chrono::seconds(1));

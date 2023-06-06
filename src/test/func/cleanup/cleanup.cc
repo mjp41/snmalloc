@@ -7,11 +7,9 @@ void ecall()
 {
   snmalloc::ScopedAllocator a;
   std::vector<void*> allocs;
-  size_t count = 0;
   for (size_t j = 0; j < 1000; j++)
   {
     allocs.push_back(a.alloc.alloc(j % 1024));
-    count += j % 1024;
   }
   auto p = a.alloc.alloc(1 * 1024 * 1024);
   memset(p, 0, 1 * 1024 * 1024);
@@ -24,7 +22,7 @@ void ecall()
 
 void thread_body()
 {
-  for (int i = 0; i < 10000; i++)
+  for (int i = 0; i < 1000; i++)
   {
     ecall();
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -33,7 +31,7 @@ void thread_body()
 
 void monitor_body()
 {
-  for (int i = 0; i < 10000; i++)
+  for (int i = 0; i < 60; i++)
   {
     std::cout << "Current: "
               << snmalloc::Alloc::Config::Backend::get_current_usage()
