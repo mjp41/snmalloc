@@ -369,6 +369,8 @@ namespace snmalloc
         // don't touch the cache lines at this point in snmalloc_check_client.
         auto start = clear_slab(meta, sizeclass);
 
+        stats[sizeclass].slabs_deallocated++;
+        
         Config::Backend::dealloc_chunk(
           get_backend_local_state(),
           *meta,
@@ -404,6 +406,8 @@ namespace snmalloc
 
         // Remove from set of fully used slabs.
         meta->node.remove();
+
+        stats[entry.get_sizeclass()].slabs_deallocated++;
 
         Config::Backend::dealloc_chunk(
           get_backend_local_state(), *meta, p, size);
@@ -830,6 +834,7 @@ namespace snmalloc
       auto r = finish_alloc<zero_mem, Config>(p, sizeclass);
 
       stats[sizeclass].objects_allocated++;
+      stats[sizeclass].slabs_allocated++;
       return ticker.check_tick(r);
     }
 

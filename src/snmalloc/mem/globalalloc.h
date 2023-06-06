@@ -158,26 +158,33 @@ namespace snmalloc
     auto l_dump = dump++;
     if (l_dump == 0)
     {
-      message<1024>("snmalloc_allocs,dumpid,sizeclass,size,allocated,deallocated,in_use,bytes");
-      message<1024>("snmalloc_totals,dumpid,backend bytes,peak backend bytes,requested");
+      message<1024>("snmalloc_allocs,dumpid,sizeclass,size,allocated,deallocated,in_use,bytes,slabs allocated,slabs deallocated,slabs in_use,slabs bytes");
+      message<1024>("snmalloc_totals,dumpid,backend bytes,peak backend bytes,requested,slabs requested bytes");
     }
 
     auto stats = snmalloc::get_stats<Config>();
-    size_t total_live{0}; 
+    size_t total_live{0};
+    size_t total_live_slabs{0};
     for (size_t i = 0; i < snmalloc::SIZECLASS_REP_SIZE; i++)
     {
       auto sc = snmalloc::sizeclass_t::from_raw(i);
       auto allocated = *stats[sc].objects_allocated;
       auto deallocated = *stats[sc].objects_deallocated;
+      auto slabs_allocated = *stats[sc].slabs_allocated;
+      auto slabs_deallocated = *stats[sc].slabs_deallocated;
       if (allocated == 0 && deallocated == 0)
         continue;
-      auto size =
-        snmalloc::sizeclass_full_to_size(snmalloc::sizeclass_t::from_raw(i));
+      auto size = snmalloc::sizeclass_full_to_size(sc);
+      auto slab_size = snmalloc::sizeclass_full_to_slab_size(sc);
       auto in_use = allocated - deallocated;
       auto amount = in_use * size;
       total_live += amount;
-      snmalloc::message<1024>("snmalloc_allocs,{},{},{},{},{},{},{}", l_dump, i, size, allocated, deallocated, in_use,amount);
+      auto in_use_slabs = slabs_allocated - slabs_deallocated;
+      auto amount_slabs = in_use_slabs * slab_size;
+      total_live_slabs += amount_slabs;
+
+      snmalloc::message<1024>("snmalloc_allocs,{},{},{},{},{},{},{},{},{},{},{}", l_dump, i, size, allocated, deallocated, in_use, amount, slabs_allocated, slabs_deallocated, in_use_slabs, amount_slabs);
     }
-    snmalloc::message<1024>("snmalloc_totals,{},{},{},{}", l_dump, Config::Backend::get_current_usage(), Config::Backend::get_peak_usage(), total_live);
+    snmalloc::message<1024>("snmalloc_totals,{},{},{},{},{}", l_dump, Config::Backend::get_current_usage(), Config::Backend::get_peak_usage(), total_live, total_live_slabs);
   }
 } // namespace snmalloc

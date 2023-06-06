@@ -28,8 +28,8 @@ namespace snmalloc
   {
     MonotoneStat objects_allocated{};
     MonotoneStat objects_deallocated{};
-    // MonotoneStat slabs_allocated;
-    // MonotoneStat slabs_deallocated;
+    MonotoneStat slabs_allocated{};
+    MonotoneStat slabs_deallocated{};
   };
 
   class AllocStats
@@ -48,17 +48,15 @@ namespace snmalloc
       return sizeclass[sizeclass_t::from_small_class(index).raw()];
     }
 
-    AllocStat operator+=(const AllocStats& other)
+    void operator+=(const AllocStats& other)
     {
-      AllocStat result;
       for (size_t i = 0; i < SIZECLASS_REP_SIZE; i++)
       {
         sizeclass[i].objects_allocated += other.sizeclass[i].objects_allocated;
         sizeclass[i].objects_deallocated += other.sizeclass[i].objects_deallocated;
-        // result.slabs_allocated += other.sizeclass[i].slabs_allocated;
-        // result.slabs_deallocated += other.sizeclass[i].slabs_deallocated;
+        sizeclass[i].slabs_allocated += other.sizeclass[i].slabs_allocated;
+        sizeclass[i].slabs_deallocated += other.sizeclass[i].slabs_deallocated;
       }
-      return result;
     }
   };
 } // namespace snmalloc
