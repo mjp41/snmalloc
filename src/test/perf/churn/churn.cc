@@ -9,12 +9,13 @@ int main()
   std::vector<std::thread> threads;
   std::atomic<size_t> running;
   snmalloc::Stat requests;
+  std::atomic<bool> done{false};
 
   for (size_t i = 0; i < 16; i++)
   {
-    std::thread([&running, &requests]() {
+    threads.push_back(std::thread([&running, &requests, &done]() {
       std::queue<size_t*> q;
-      while (true)
+      while (!done)
       {
         snmalloc::ScopedAllocator alloc;
         running++;
@@ -54,7 +55,7 @@ int main()
         running--;
         std::this_thread::sleep_for(std::chrono::microseconds(rand() % 2000));
       }
-    }).detach();
+    }));
   }
 
   std::thread([&requests]() {
@@ -83,6 +84,11 @@ int main()
       snmalloc::print_alloc_stats<snmalloc::Alloc::Config>();
     }
   }).join();
+
+  done = true;
+
+  for (auto& t : threads)
+    t.join();
 
   return 0;
 }

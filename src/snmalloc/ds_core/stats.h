@@ -29,9 +29,8 @@ namespace snmalloc
     void decrease(size_t amount)
     {
       size_t prev = curr.fetch_sub(amount);
-      // TODO Fix this to be true.
-      //      SNMALLOC_ASSERT_MSG(prev >= amount, "prev = {}, amount = {}",
-      //      prev, amount);
+      SNMALLOC_ASSERT_MSG(
+        prev >= amount, "prev = {}, amount = {}", prev, amount);
       UNUSED(prev);
     }
 
@@ -63,6 +62,30 @@ namespace snmalloc
     void operator--()
     {
       decrease(1);
+    }
+  };
+
+  /**
+   * Very basic statistic that can only grow.  Not thread-safe.
+   */
+  class MonotoneLocalStat
+  {
+    size_t value{0};
+
+  public:
+    void operator++(int)
+    {
+      value++;
+    }
+
+    void operator+=(const MonotoneLocalStat& other)
+    {
+      value += other.value;
+    }
+
+    size_t operator*()
+    {
+      return value;
     }
   };
 } // namespace snmalloc

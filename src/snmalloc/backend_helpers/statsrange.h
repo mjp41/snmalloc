@@ -28,7 +28,7 @@ namespace snmalloc
 
       constexpr Type() = default;
 
-      capptr::Arena<void> alloc_range(size_t size)
+      CapPtr<void, ChunkBounds> alloc_range(size_t size)
       {
         auto r = parent.alloc_range(size);
         if (r != nullptr)
@@ -36,7 +36,7 @@ namespace snmalloc
         return r;
       }
 
-      void dealloc_range(capptr::Arena<void> base, size_t size)
+      void dealloc_range(CapPtr<void, ChunkBounds> base, size_t size)
       {
         usage -= size;
         parent.dealloc_range(base, size);

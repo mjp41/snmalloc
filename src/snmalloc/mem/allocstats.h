@@ -5,33 +5,12 @@
 
 namespace snmalloc
 {
-  class MonotoneStat
-  {
-    size_t value{0};
-
-  public:
-    void operator++(int)
-    {
-      value++;
-    }
-
-    void operator+=(const MonotoneStat& other)
-    {
-      value += other.value;
-    }
-
-    size_t operator*()
-    {
-      return value;
-    }
-  };
-
   struct AllocStat
   {
-    MonotoneStat objects_allocated{};
-    MonotoneStat objects_deallocated{};
-    MonotoneStat slabs_allocated{};
-    MonotoneStat slabs_deallocated{};
+    MonotoneLocalStat objects_allocated{};
+    MonotoneLocalStat objects_deallocated{};
+    MonotoneLocalStat slabs_allocated{};
+    MonotoneLocalStat slabs_deallocated{};
   };
 
   class AllocStats

@@ -558,7 +558,7 @@ namespace snmalloc
       }
       else
       {
-        need_post = attached_cache->remote_dealloc_cache.reserve_space(entry);
+        need_post |= attached_cache->remote_dealloc_cache.reserve_space(entry);
         attached_cache->remote_dealloc_cache
           .template dealloc<sizeof(CoreAllocator)>(
             entry.get_remote()->trunc_id(), p.as_void());
