@@ -1,6 +1,7 @@
 #include <iostream>
 #include <snmalloc/snmalloc.h>
 #include <thread>
+#include <vector>
 
 void ecall()
 {
