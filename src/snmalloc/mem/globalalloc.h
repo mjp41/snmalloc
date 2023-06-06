@@ -139,16 +139,14 @@ namespace snmalloc
   }
 
   template<SNMALLOC_CONCEPT(IsConfig) Config>
-  inline static AllocStats get_stats()
+  inline static void get_stats(AllocStats& stats)
   {
     auto alloc = AllocPool<Config>::iterate();
-    AllocStats stats;
     while (alloc != nullptr)
     {
       stats += alloc->get_stats();
       alloc = AllocPool<Config>::iterate(alloc);
     }
-    return stats;
   }
 
   template<SNMALLOC_CONCEPT(IsConfig) Config>
@@ -168,7 +166,8 @@ namespace snmalloc
         "count");
     }
 
-    auto stats = snmalloc::get_stats<Config>();
+    AllocStats stats;
+    snmalloc::get_stats<Config>(stats);
     size_t total_live{0};
     size_t total_live_slabs{0};
     for (size_t i = 0; i < snmalloc::SIZECLASS_REP_SIZE; i++)

@@ -70,22 +70,22 @@ namespace snmalloc
    */
   class MonotoneLocalStat
   {
-    size_t value{0};
+    std::atomic<size_t> value{0};
 
   public:
     void operator++(int)
     {
-      value++;
+      value.fetch_add(1, std::memory_order_relaxed);
     }
 
     void operator+=(const MonotoneLocalStat& other)
     {
-      value += other.value;
+      value.fetch_add(other.value.load(std::memory_order_relaxed), std::memory_order_relaxed);
     }
 
     size_t operator*()
     {
-      return value;
+      return value.load(std::memory_order_relaxed);
     }
   };
 } // namespace snmalloc
