@@ -153,20 +153,33 @@ namespace snmalloc
   template<SNMALLOC_CONCEPT(ConceptBackendGlobals) SharedStateHandle>
   inline static void print_alloc_stats()
   {
-#ifndef SNMALLOC_PASS_THROUGH // This test depends on snmalloc internals
     auto stats = snmalloc::get_stats<SharedStateHandle>();
+    size_t total = 0;
+    size_t slab_total = 0;
     for (size_t i = 0; i < snmalloc::SIZECLASS_REP_SIZE; i++)
     {
       auto sc = snmalloc::sizeclass_t::from_raw(i);
       auto allocated = *stats[sc].objects_allocated;
       auto deallocated = *stats[sc].objects_deallocated;
+      auto slabs_allocated = *stats[sc].slabs_allocated;
+      auto slabs_deallocated = *stats[sc].slabs_deallocated;
       if (allocated == 0 && deallocated == 0)
         continue;
       auto size =
         snmalloc::sizeclass_full_to_size(snmalloc::sizeclass_t::from_raw(i));
       auto in_use = allocated - deallocated;
-      snmalloc::message<1024>("SNMALLOCallocs,{},{},{},{},{}", i, size, allocated, deallocated, in_use);
+      auto amount = in_use * size;
+      auto in_use_slabs = slabs_allocated - slabs_deallocated;
+      auto slab_size = sizeclass_full_to_slab_size(sc);
+      auto slab_amount = in_use_slabs * slab_size;
+      total += amount;
+      slab_total += slab_amount;
+      size_t fragmentation = slab_amount - amount;
+      long percent = slab_amount == 0 ? 999 : (fragmentation * 100) / slab_amount;
+      snmalloc::message<2048>("SNMALLOCallocs,{},{},{},{},{},{},{},{},{},{},{},{},{}", i, size, slab_size, allocated, deallocated, in_use, amount, slabs_allocated, slabs_deallocated, in_use_slabs, slab_amount, fragmentation, percent);
     }
-#endif
+    size_t total_frag = slab_total - total;
+    long total_percent = (total_frag * 100) / slab_total;
+    snmalloc::message<1024>("SNMALLOCtotal,{},{},{},{},{}", total, slab_total, SharedStateHandle::get_current_usage(), SharedStateHandle::get_peak_usage(), total_percent);
   }
 } // namespace snmalloc

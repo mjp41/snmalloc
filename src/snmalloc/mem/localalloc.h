@@ -206,7 +206,10 @@ namespace snmalloc
         }
 
         if (chunk.unsafe_ptr() != nullptr)
+        {
           core_alloc->stats[size_to_sizeclass_full(size)].objects_allocated++;
+          core_alloc->stats[size_to_sizeclass_full(size)].slabs_allocated++;
+        }
 
         return capptr_chunk_is_alloc(capptr_to_user_address_control(chunk));
       });

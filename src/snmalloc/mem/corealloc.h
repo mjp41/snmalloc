@@ -400,6 +400,8 @@ namespace snmalloc
           start,
           sizeclass_to_slab_size(sizeclass));
 
+        stats[sizeclass].slabs_deallocated++;
+
         return true;
       });
     }
@@ -428,6 +430,8 @@ namespace snmalloc
 #else
         UNUSED(size);
 #endif
+
+        stats[entry.get_sizeclass()].slabs_deallocated++;
 
         Backend::dealloc_chunk(get_backend_local_state(), *meta, p, size);
 
@@ -810,6 +814,8 @@ namespace snmalloc
       {
         return nullptr;
       }
+
+      stats[sizeclass].slabs_allocated++;
 
       // Set meta slab to empty.
       meta->initialise(sizeclass);
