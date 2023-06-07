@@ -14,9 +14,17 @@ namespace snmalloc
   public:
     static void print_stack_trace() {}
 
+    /**
+     * Report a message to standard error, followed by a newline.
+     */
+    static void message(const char* const str) noexcept
+    {
+      puts(str);
+    }
+
     [[noreturn]] static void error(const char* const str)
     {
-      UNUSED(str);
+      message(str);
       oe_abort();
     }
     static constexpr size_t address_bits = Aal::address_bits;
