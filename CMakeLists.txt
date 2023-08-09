@@ -95,7 +95,7 @@ CHECK_CXX_SOURCE_COMPILES("
 #include <malloc.h>
 #endif
 size_t malloc_usable_size(const void* ptr) { return 0; }
-int main() { return 0; }
+int main() { malloc_usable_size(nullptr); return 0; }
 " CONST_QUALIFIED_MALLOC_USABLE_SIZE)
 
 # Some libcs might not have getentropy, e.g. it appeared in glibc 2.25
@@ -234,7 +234,7 @@ if (SNMALLOC_NO_REALLOCARR)
   add_as_define(SNMALLOC_NO_REALLOCARR)
 endif()
 
-target_compile_definitions(snmalloc INTERFACE $<$<BOOL:CONST_QUALIFIED_MALLOC_USABLE_SIZE>:MALLOC_USABLE_SIZE_QUALIFIER=const>)
+target_compile_definitions(snmalloc INTERFACE $<$<STREQUAL:CONST_QUALIFIED_MALLOC_USABLE_SIZE,"1">:MALLOC_USABLE_SIZE_QUALIFIER=const>)
 
 # In debug and CI builds, link the backtrace library so that we can get stack
 # traces on errors.
