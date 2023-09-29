@@ -1026,6 +1026,17 @@ namespace snmalloc
       size_t size = sizeof(CA);
       size_t round_sizeof = Aal::capptr_size_round(size);
       size_t request_size = bits::next_pow2(round_sizeof);
+      if constexpr (mitigations(metadata_protection))
+      {
+        request_size = bits::max(request_size, MIN_CHUNK_SIZE);
+      }
+      else
+      {
+        // This can be used as object data, so ask for a bit more
+        // initially.
+        request_size = bits::max(request_size, MIN_CHUNK_SIZE * 8);
+      }
+
       size_t spare = request_size - round_sizeof;
 
       auto raw =

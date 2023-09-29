@@ -123,7 +123,6 @@ namespace snmalloc
     // Create global range that can service small meta-data requests.
     // Don't want to add the SmallBuddyRange to the CentralMetaRange as that
     // would require committing memory inside the main global lock.
-    using GlobalMetaRange =
-      Pipe<CentralMetaRange, SmallBuddyRange, GlobalRange>;
+    using GlobalMetaRange = CentralMetaRange;
   };
 } // namespace snmalloc
