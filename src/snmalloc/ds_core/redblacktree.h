@@ -259,25 +259,39 @@ namespace snmalloc
     {
       friend class RBTree;
 
-      std::array<RBStep, 128> path;
+      struct RBStepMaybeUninit
+      {
+        std::array<char, sizeof(RBStep)> storage;
+      };
+
+      std::array<RBStepMaybeUninit, 128> path;
       size_t length = 0;
+
+      RBStep& step(size_t i)
+      {
+        // UB here as may not be initialised.
+        return *reinterpret_cast<RBStep*>(&path[i]);
+      }
 
       RBPath(typename Rep::Handle root)
       {
-        path[0].set(root, false);
+        // static std::atomic<size_t> counter = 0;
+        // message("RBPath: {}", counter++);
+
+        step(0).set(root, false);
         length = 1;
       }
 
       ChildRef ith(size_t n)
       {
         SNMALLOC_ASSERT(length >= n);
-        return path[length - n - 1].node;
+        return step(length - n - 1).node;
       }
 
       bool ith_dir(size_t n)
       {
         SNMALLOC_ASSERT(length >= n);
-        return path[length - n - 1].dir;
+        return step(length - n - 1).dir;
       }
 
       ChildRef curr()
@@ -313,7 +327,7 @@ namespace snmalloc
         auto next = get_dir(direction, curr());
         if (next.is_null())
           return false;
-        path[length].set(next, direction);
+        step(length).set(next, direction);
         length++;
         return true;
       }
@@ -324,7 +338,7 @@ namespace snmalloc
       bool move_inc_null(bool direction)
       {
         auto next = get_dir(direction, curr());
-        path[length].set(next, direction);
+        step(length).set(next, direction);
         length++;
         return !(next.is_null());
       }
@@ -351,9 +365,9 @@ namespace snmalloc
         // TODO optimise usage to avoid traversing whole path.
         for (size_t i = 1; i < length; i++)
         {
-          auto parent = path[i - 1].node;
-          auto& curr = path[i].node;
-          auto dir = path[i].dir;
+          auto parent = step(i - 1).node;
+          auto& curr = step(i).node;
+          auto dir = step(i).dir;
           auto actual = get_dir(dir, parent);
           if (actual != curr)
           {
@@ -374,9 +388,9 @@ namespace snmalloc
           {
             message<1024>(
               "  -> {} @ {} ({})",
-              Rep::printable(K(path[i].node)),
-              path[i].node.printable(),
-              path[i].dir);
+              Rep::printable(K(step(i).node)),
+              step(i).node.printable(),
+              step(i).dir);
           }
         }
       }
