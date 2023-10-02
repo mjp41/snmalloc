@@ -4,6 +4,124 @@
 
 namespace snmalloc
 {
+  template<typename Rep>
+  class BuddyEntry
+  {
+    RBTree<Rep> tree{};
+    typename Rep::Contents slots[2]{};
+    size_t count{0};
+
+  public:
+    constexpr BuddyEntry() = default;
+
+    void invariant()
+    {
+      SNMALLOC_ASSERT(count > 2 || tree.is_empty());
+      SNMALLOC_ASSERT(count != 1 || slots[0] != Rep::null);
+      SNMALLOC_ASSERT(count != 2 || slots[1] != Rep::null);
+    }
+
+    bool is_empty()
+    {
+      return count == 0 && tree.is_empty();
+    }
+
+    template<bool Consolidate>
+    typename Rep::Contents add_block(typename Rep::Contents addr, size_t size)
+    {
+      SNMALLOC_ASSERT(Rep::align_down(addr, size) == addr);
+      if (count == 0)
+      {
+        slots[0] = addr;
+        count++;
+        invariant();
+        return Rep::null;
+      }
+
+      if (count == 1)
+      {
+        if (Rep::buddy(slots[0], size) == addr)
+        {
+          count = 0;
+          slots[0] = Rep::null;
+          addr = Rep::align_down(addr, size * 2);
+          invariant();
+          return addr;
+        }
+        slots[1] = addr;
+        count++;
+        invariant();
+        return Rep::null;
+      }
+
+      if (count == 2)
+      {
+        tree.insert_elem(slots[0]);
+        tree.insert_elem(slots[1]);
+      }
+
+      auto path = tree.get_root_path();
+      auto buddy = Rep::buddy(addr, size);
+      bool contains_buddy = tree.find(path, buddy);
+      if (contains_buddy)
+      {
+        // Only check if we can consolidate after we know the buddy is in
+        // the buddy allocator.  This is required to prevent possible
+        // segfaults from looking at the buddies meta-data, which we only know
+        // exists once we have found it in the red-black tree.
+        if (Rep::can_consolidate(addr, size))
+        {
+          tree.remove_path(path);
+
+          count--;
+          if (count == 2)
+          {
+            slots[0] = tree.remove_min();
+            slots[1] = tree.remove_min();
+          }
+          if (count == 1)
+          {
+            slots[0] = tree.remove_min();
+          }
+
+          // Add to next level cache
+          invariant();
+          return Rep::align_down(addr, size * 2);
+        }
+
+        // Re-traverse as the path was to the buddy,
+        // but the representation says we cannot combine.
+        // We must find the correct place for this element.
+        // Something clever could be done here, but it's not worth it.
+        path = tree.get_root_path();
+        tree.find(path, addr);
+      }
+      count++;
+      tree.insert_path(path, addr);
+      invariant();
+      return Rep::null;
+    }
+
+    typename Rep::Contents remove_block()
+    {
+      if (count == 0)
+        return Rep::null;
+
+      if (count < 3)
+        return slots[--count];
+
+      auto addr = tree.remove_min();
+      count--;
+      if (count == 2)
+      {
+        slots[1] = tree.remove_min();
+        slots[0] = tree.remove_min();
+      }
+      invariant();
+      return addr;
+    }
+  };
+
   /**
    * Class representing a buddy allocator
    *
@@ -15,7 +133,7 @@ namespace snmalloc
   template<typename Rep, size_t MIN_SIZE_BITS, size_t MAX_SIZE_BITS>
   class Buddy
   {
-    std::array<RBTree<Rep>, MAX_SIZE_BITS - MIN_SIZE_BITS> trees{};
+    std::array<BuddyEntry<Rep>, MAX_SIZE_BITS - MIN_SIZE_BITS> entries{};
     // All RBtrees at or above this index should be empty.
     size_t empty_at_or_above{0};
 
@@ -42,9 +160,13 @@ namespace snmalloc
     void invariant()
     {
 #ifndef NDEBUG
-      for (size_t i = empty_at_or_above; i < trees.size(); i++)
+      for (auto& entry : entries)
       {
-        SNMALLOC_ASSERT(trees[i].is_empty());
+        entry.invariant();
+      }
+      for (size_t i = empty_at_or_above; i < entries.size(); i++)
+      {
+        SNMALLOC_ASSERT(entries[i].is_empty());
       }
 #endif
     }
@@ -62,59 +184,23 @@ namespace snmalloc
      * this allocator.
      */
     template<bool Consolidate>
-    typename Rep::Contents
-    add_block(typename Rep::Contents addr, size_t size)
+    typename Rep::Contents add_block(typename Rep::Contents addr, size_t size)
     {
       auto idx = to_index(size);
-      empty_at_or_above = bits::max(empty_at_or_above, idx + 1);
-
       validate_block(addr, size);
 
-      auto path = trees[idx].get_root_path();
-
-      if constexpr (Consolidate)
+      while (size < bits::one_at_bit(MAX_SIZE_BITS))
       {
-        auto buddy = Rep::buddy(addr, size);
-        bool contains_buddy = trees[idx].find(path, buddy);
-        if (contains_buddy)
-        {
-          // Only check if we can consolidate after we know the buddy is in
-          // the buddy allocator.  This is required to prevent possible
-          // segfaults from looking at the buddies meta-data, which we only know
-          // exists once we have found it in the red-black tree.
-          if (Rep::can_consolidate(addr, size))
-          {
-            trees[idx].remove_path(path);
+        empty_at_or_above = bits::max(empty_at_or_above, idx + 1);
+        addr = entries[idx].template add_block<Consolidate>(addr, size);
+        if (addr == Rep::null)
+          return Rep::null;
 
-            // Add to next level cache
-            size *= 2;
-            addr = Rep::align_down(addr, size);
-            if (size == bits::one_at_bit(MAX_SIZE_BITS))
-            {
-              // Invariant should be checked on all non-tail return paths.
-              // Holds trivially here with current design.
-              invariant();
-              // Too big for this buddy allocator.
-              return addr;
-            }
-            return add_block<Consolidate>(addr, size);
-          }
+        size = size * 2;
+        idx++;
+      }
 
-          // Re-traverse as the path was to the buddy,
-          // but the representation says we cannot combine.
-          // We must find the correct place for this element.
-          // Something clever could be done here, but it's not worth it.
-          //        path = trees[idx].get_root_path();
-          trees[idx].find(path, addr);
-        }
-      }
-      else
-      {
-        trees[idx].find(path, addr);
-      }
-      trees[idx].insert_path(path, addr);
-      invariant();
-      return Rep::null;
+      return addr;
     }
 
     /**
@@ -139,7 +225,7 @@ namespace snmalloc
           return Rep::null;
         }
 
-        addr = trees[idx].remove_min();
+        addr = entries[idx].remove_block();
         if (addr != Rep::null)
         {
           validate_block(addr, size);
@@ -157,6 +243,7 @@ namespace snmalloc
         addr = Rep::offset(addr, size);
       }
 
+      invariant();
       return addr;
     }
   };
