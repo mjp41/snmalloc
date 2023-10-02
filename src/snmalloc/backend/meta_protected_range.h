@@ -28,7 +28,6 @@ namespace snmalloc
     size_t MinSizeBits = MinBaseSizeBits<PAL>()>
   struct MetaProtectedRangeLocalState : BaseLocalStateConstants
   {
-  private:
     // Global range of memory
     using GlobalR = Pipe<
       Base,
@@ -40,6 +39,7 @@ namespace snmalloc
       LogRange<2>,
       GlobalRange>;
 
+  private:
     static constexpr size_t page_size_bits =
       bits::next_pow2_bits_const(PAL::page_size);
 
