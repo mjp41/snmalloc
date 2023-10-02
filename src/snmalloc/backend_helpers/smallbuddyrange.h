@@ -178,7 +178,7 @@ namespace snmalloc
             {
               CapPtr<void, ChunkBounds> overflow =
                 buddy_small
-                  .add_block(
+                  .template add_block<true>(
                     base.template as_reinterpret<FreeChunk<ChunkBounds>>(),
                     align)
                   .template as_reinterpret<void>();
