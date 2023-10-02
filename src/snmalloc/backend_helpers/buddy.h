@@ -153,8 +153,8 @@ namespace snmalloc
       for (; idx > first_idx; idx--)
       {
         size = size >> 1;
-        auto second = Rep::offset(addr, size);
-        add_block<false>(second, size);
+        add_block<false>(addr, size);
+        addr = Rep::offset(addr, size);
       }
 
       return addr;
