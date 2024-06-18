@@ -69,7 +69,7 @@ namespace test
     setup(r, alloc);
 
     {
-      MeasureTime m;
+      ::MeasureTime m;
       m << "External pointer queries ";
       for (size_t i = 0; i < iterations; i++)
       {

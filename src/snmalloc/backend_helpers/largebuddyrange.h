@@ -262,11 +262,19 @@ namespace snmalloc
       {
         range_to_pow_2_blocks<MIN_CHUNK_BITS>(
           base, length, [this](capptr::Arena<void> base, size_t align, bool) {
+            message<1024>("add_range: base {}, align {}", base.unsafe_ptr(), align);
+            MeasureTime mt1("add_range: add_block");
             auto overflow =
               capptr::Arena<void>::unsafe_from(reinterpret_cast<void*>(
                 buddy_large.add_block(base.unsafe_uintptr(), align)));
+            mt1.stop();
 
-            dealloc_overflow(overflow);
+            if (overflow != nullptr)
+            {
+              message<1024>("add_range: dealloc_overflow: {}", overflow.unsafe_ptr());
+              MeasureTime mt2("add_range: dealloc_overflow");
+              dealloc_overflow(overflow);
+            }
           });
       }
 
@@ -289,10 +297,13 @@ namespace snmalloc
           refill_size = bits::max(refill_size, size);
           refill_size = bits::next_pow2(refill_size);
 
+          MeasureTime refill_alloc_range("Buddy refill alloc_range(aligned)");
           auto refill_range = parent.alloc_range(refill_size);
+          refill_alloc_range.stop();
           if (refill_range != nullptr)
           {
             requested_total += refill_size;
+            MeasureTime add_range_time("Buddy refill add_range(aligned)");
             add_range(pointer_offset(refill_range, size), refill_size - size);
           }
           return refill_range;
@@ -315,12 +326,16 @@ namespace snmalloc
         auto refill_size = bits::max(needed_size, REFILL_SIZE);
         while (needed_size <= refill_size)
         {
+          MeasureTime refill_alloc_range("Buddy refill alloc_range");
           auto refill = parent.alloc_range(refill_size);
+          refill_alloc_range.stop();
 
           if (refill != nullptr)
           {
             requested_total += refill_size;
+            MeasureTime add_range_time("Buddy add_range");
             add_range(refill, refill_size);
+            add_range_time.stop();
 
             SNMALLOC_ASSERT(refill_size < bits::one_at_bit(MAX_SIZE_BITS));
             static_assert(
@@ -362,12 +377,15 @@ namespace snmalloc
           return nullptr;
         }
 
+        MeasureTime remove_b("Buddy time remove_block");
         auto result = capptr::Arena<void>::unsafe_from(
           reinterpret_cast<void*>(buddy_large.remove_block(size)));
+        remove_b.stop();
 
         if (result != nullptr)
           return result;
-
+        
+        MeasureTime refill_b("Buddy time refill");
         return refill(size);
       }
 
@@ -388,7 +406,9 @@ namespace snmalloc
         auto overflow =
           capptr::Arena<void>::unsafe_from(reinterpret_cast<void*>(
             buddy_large.add_block(base.unsafe_uintptr(), size)));
-        dealloc_overflow(overflow);
+
+        if (overflow != nullptr)
+          dealloc_overflow(overflow);
       }
     };
   };

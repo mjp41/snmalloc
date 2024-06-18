@@ -27,6 +27,7 @@ namespace snmalloc
 
       if constexpr (pal_supports<AlignedAllocation, PAL>)
       {
+        MeasureTime paltime("Pal time");
         SNMALLOC_ASSERT(size >= PAL::minimum_alloc_size);
         auto result = capptr::Arena<void>::unsafe_from(
           PAL::template reserve_aligned<false>(size));
@@ -38,12 +39,12 @@ namespace snmalloc
       }
       else
       {
+        MeasureTime paltime("Pal time");
         auto result = capptr::Arena<void>::unsafe_from(PAL::reserve(size));
 
 #ifdef SNMALLOC_TRACING
         message<1024>("Pal range alloc: {} ({})", result.unsafe_ptr(), size);
 #endif
-
         return result;
       }
     }

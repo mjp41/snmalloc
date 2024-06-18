@@ -65,7 +65,7 @@ void test(
   shape(size);
   for (size_t i = 0; i < 10; i++)
   {
-    MeasureTime m(true);
+    ::MeasureTime m(true);
     test_memcpy(size, src, mc);
     auto time = m.get_time();
     stats.push_back({size, time});

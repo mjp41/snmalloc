@@ -2,7 +2,7 @@
 
 #include "../aal/aal.h"
 #include "../pal/pal.h"
-
+#include "magiclog.h"
 #include <atomic>
 #include <functional>
 
@@ -54,11 +54,13 @@ namespace snmalloc
 
     void attach(std::atomic<CombineLockNode*>& lock)
     {
+      MeasureTime mt("combining_lock::total");
       // Add to the queue of pending work
       auto prev = lock.exchange(this);
 
       if (prev != nullptr)
       {
+        MeasureTime mt1("combining_lock::waiting");
         // If we aren't the head, link into predecessor
         prev->next = this;
 
@@ -80,8 +82,11 @@ namespace snmalloc
       auto curr = this;
       while (true)
       {
-        // Perform work for head of the queue
-        curr->f_raw(curr);
+        {
+            MeasureTime mt2("combining_lock:work item");
+            // Perform work for head of the queue
+            curr->f_raw(curr);
+        }
 
         // Determine if there are more elements.
         auto next = curr->next.load();

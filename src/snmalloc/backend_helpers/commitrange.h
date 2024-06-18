@@ -34,7 +34,10 @@ namespace snmalloc
           PAL::page_size);
         auto range = parent.alloc_range(size);
         if (range != nullptr)
+        {
+          MeasureTime mt1("Commit Range notify_using");
           PAL::template notify_using<NoZero>(range.unsafe_ptr(), size);
+        }
         return range;
       }
 
@@ -45,7 +48,10 @@ namespace snmalloc
           "size ({}) must be a multiple of page size ({})",
           size,
           PAL::page_size);
-        PAL::notify_not_using(base.unsafe_ptr(), size);
+        {
+          MeasureTime mt1("Commit Range notify_not_using");
+          PAL::notify_not_using(base.unsafe_ptr(), size);
+        }
         parent.dealloc_range(base, size);
       }
     };

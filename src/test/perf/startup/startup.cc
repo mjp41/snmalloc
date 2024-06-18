@@ -3,6 +3,7 @@
 #include "test/usage.h"
 #include "test/xoroshiro.h"
 
+#include <cstdlib>
 #include <iostream>
 #include <snmalloc/snmalloc.h>
 #include <thread>

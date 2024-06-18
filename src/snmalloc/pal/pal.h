@@ -175,11 +175,17 @@ namespace snmalloc
   }
 
   template<size_t BufferSize, typename... Args>
-  inline void message(Args... args)
+  inline void message_tid(DefaultPal::ThreadIdentity tid, Args... args)
   {
     MessageBuilder<BufferSize> msg{std::forward<Args>(args)...};
     MessageBuilder<BufferSize> msg_tid{
-      "{}: {}", DefaultPal::get_tid(), msg.get_message()};
+      "{}: {}", tid, msg.get_message()};
     DefaultPal::message(msg_tid.get_message());
+  }
+
+  template<size_t BufferSize, typename... Args>
+  inline void message(Args... args)
+  {
+    message_tid<BufferSize>(DefaultPal::get_tid(), std::forward<Args>(args)...);
   }
 } // namespace snmalloc

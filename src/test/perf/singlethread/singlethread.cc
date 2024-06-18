@@ -11,7 +11,7 @@ void test_alloc_dealloc(size_t count, size_t size, bool write)
   auto& alloc = ThreadAlloc::get();
 
   {
-    MeasureTime m;
+    ::MeasureTime m;
     m << "Count: " << std::setw(6) << count << ", Size: " << std::setw(6)
       << size << ", ZeroMem: " << (zero_mem == YesZero) << ", Write: " << write;
 

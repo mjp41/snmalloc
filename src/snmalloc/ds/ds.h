@@ -9,6 +9,7 @@
 #include "combininglock.h"
 #include "entropy.h"
 #include "flaglock.h"
+#include "magiclog.h"
 #include "mpmcstack.h"
 #include "pagemap.h"
 #include "singleton.h"

@@ -67,6 +67,7 @@ namespace snmalloc
       auto page_start = pointer_align_down<OS_PAGE_SIZE, char>(first);
       auto page_end = pointer_align_up<OS_PAGE_SIZE, char>(last);
       size_t using_size = pointer_diff(page_start, page_end);
+      MeasureTime ("register_range: notify_using");
       PAL::template notify_using<NoZero>(page_start, using_size);
       if constexpr (pal_supports<CoreDump, PAL>)
       {
@@ -118,6 +119,7 @@ namespace snmalloc
     std::enable_if_t<has_bounds_, std::pair<void*, size_t>>
     init(void* b, size_t s)
     {
+      MeasureTime pm_init_time("Pagemap.init time");
       SNMALLOC_ASSERT(!is_initialised());
 
       static_assert(
@@ -176,6 +178,7 @@ namespace snmalloc
     template<bool randomize_position, bool has_bounds_ = has_bounds>
     std::enable_if_t<!has_bounds_> init()
     {
+      MeasureTime pm_init_time("Pagemap.init time");
       SNMALLOC_ASSERT(!is_initialised());
 
       static_assert(
@@ -194,7 +197,9 @@ namespace snmalloc
 #endif
       size_t request_size = REQUIRED_SIZE + additional_size;
 
+      MeasureTime mt("Pagemap.init reserve");
       auto new_body_untyped = PAL::reserve(request_size);
+      mt.stop();
 
       if constexpr (pal_supports<CoreDump, PAL>)
       {
@@ -214,36 +219,49 @@ namespace snmalloc
         // Begin pagemap at random offset within the additionally allocated
         // space.
         static_assert(bits::is_pow2(sizeof(T)), "Next line assumes this.");
+        MeasureTime mt3("Pagemap.init get_entropy");
         size_t offset = get_entropy64<PAL>() & (additional_size - sizeof(T));
+        mt3.stop();
         new_body = pointer_offset<T>(new_body_untyped, offset);
-
-        if constexpr (pal_supports<LazyCommit, PAL>)
-        {
-          void* start_page = pointer_align_down<OS_PAGE_SIZE>(new_body);
-          void* end_page = pointer_align_up<OS_PAGE_SIZE>(
-            pointer_offset(new_body, REQUIRED_SIZE));
-          // Only commit readonly memory for this range, if the platform
-          // supports lazy commit.  Otherwise, this would be a lot of memory to
-          // have mapped.
-          PAL::notify_using_readonly(
-            start_page, pointer_diff(start_page, end_page));
-        }
       }
       else
       {
-        if constexpr (pal_supports<LazyCommit, PAL>)
-        {
-          PAL::notify_using_readonly(new_body_untyped, REQUIRED_SIZE);
-        }
         new_body = static_cast<T*>(new_body_untyped);
       }
-      // Ensure bottom page is committed
-      // ASSUME: new memory is zeroed.
-      PAL::template notify_using<NoZero>(
-        pointer_align_down<OS_PAGE_SIZE>(new_body), OS_PAGE_SIZE);
 
-      // Set up zero page
-      new_body[0] = body[0];
+      if constexpr (pal_supports<LazyCommit, PAL>)
+      {
+        void* start_page = pointer_align_down<OS_PAGE_SIZE>(new_body);
+        void* end_page = pointer_align_up<OS_PAGE_SIZE>(
+          pointer_offset(new_body, REQUIRED_SIZE));
+        // Only commit readonly memory for this range, if the platform
+        // supports lazy commit.  Otherwise, this would be a lot of memory to
+        // have mapped.
+        MeasureTime mt2("Pagemap.init notify_using_readonly");
+        PAL::notify_using_readonly(
+          start_page, pointer_diff(start_page, end_page));
+      }
+      else
+      {
+        // Bottom page should always be accessible.
+        PAL::template notify_using<NoZero>(
+          pointer_align_down<OS_PAGE_SIZE>(new_body), OS_PAGE_SIZE);
+      }
+
+      {
+#ifndef NDEBUG 
+        // ASSUME: new memory is zeroed.
+        // Confirm that the default value is all zeros.
+        char* p = body;
+        for (size_t i = 0; i < sizeof(T); i++)
+        {
+          if (p[i] != 0)
+          {
+            error("Pagemap needs to be default value all zeros.");
+          }
+        }
+#endif
+      }
 
       body = new_body;
       body_opt = new_body;

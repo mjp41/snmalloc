@@ -96,8 +96,13 @@ namespace snmalloc
     // of allocators.
     SNMALLOC_SLOW_PATH static void ensure_init_slow()
     {
+      MeasureTime mt("Fake init");
+      mt.stop();
+
       if (initialised)
         return;
+
+      MeasureTime mt3("ensure_init_slow work");
 
       with(initialisation_lock,
       [&]() {
