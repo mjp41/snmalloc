@@ -460,7 +460,7 @@ jobs:
 
   # Job to run clang-format and report errors
   format:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     # We don't need to do the build for this job, but we need to configure it to get the clang-format target
     steps:
     - uses: actions/checkout@v3
