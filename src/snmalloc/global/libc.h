@@ -150,7 +150,14 @@ namespace snmalloc::libc
       return set_error(EINVAL);
     }
 
-    return malloc(aligned_size(alignment, size));
+    auto rsize = aligned_size(alignment, size);
+    if (SNMALLOC_UNLIKELY(rsize < size))
+    {
+      // Detect alignment overflowing the allocation.
+      return set_error();
+    }
+
+    return malloc(rsize);
   }
 
   inline void* aligned_alloc(size_t alignment, size_t size)
