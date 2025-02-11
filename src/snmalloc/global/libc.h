@@ -53,6 +53,12 @@ namespace snmalloc::libc
   SNMALLOC_FAST_PATH_INLINE void* realloc(void* ptr, size_t size)
   {
     auto& a = ThreadAlloc::get();
+    if (SNMALLOC_UNLIKELY(size == 0))
+    {
+      a.dealloc(ptr);
+      return nullptr;;
+    }
+
     size_t sz = a.alloc_size(ptr);
     // Keep the current allocation if the given size is in the same sizeclass.
     if (sz == round_size(size))
