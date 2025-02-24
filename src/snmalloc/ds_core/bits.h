@@ -5,7 +5,7 @@
 // #define USE_LZCNT
 
 #include "defines.h"
-#include "snmalloc/stl/atomic.h"
+#include <snmalloc/stl/atomic.h>
 #include "snmalloc/stl/type_traits.h"
 
 #include <limits.h>

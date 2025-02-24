@@ -116,7 +116,7 @@ namespace snmalloc
         // Only use this on large allocations as memset faster, and doesn't
         // introduce IPI so faster for small allocations.
         SNMALLOC_ASSERT(is_aligned_block<page_size>(p, size));
-        madvise(p, size, MADV_DONTNEED);
+        __madvise(p, size, MADV_DONTNEED);
       }
       else
 #  endif
@@ -135,11 +135,11 @@ namespace snmalloc
       if constexpr (Debug)
         memset(p, 0x5a, size);
 
-      madvise(p, size, madvise_free_flags);
+      __madvise(p, size, madvise_free_flags);
 
       if constexpr (mitigations(pal_enforce_access))
       {
-        mprotect(p, size, PROT_NONE);
+        __mprotect(p, size, PROT_NONE);
       }
     }
 
@@ -149,7 +149,7 @@ namespace snmalloc
     static void notify_do_dump(void* p, size_t size) noexcept
     {
       KeepErrno k;
-      madvise(p, size, MADV_DODUMP);
+      __madvise(p, size, MADV_DODUMP);
     }
 
     /**
@@ -158,7 +158,7 @@ namespace snmalloc
     static void notify_do_not_dump(void* p, size_t size) noexcept
     {
       KeepErrno k;
-      madvise(p, size, MADV_DONTDUMP);
+      __madvise(p, size, MADV_DONTDUMP);
     }
 
     static uint64_t get_entropy64()
@@ -203,7 +203,7 @@ namespace snmalloc
           // 2. `GRND_NONBLOCK` bit is set. Since we are reading from
           // `urandom`, this means if the entropy pool is
           // not initialised, we will get a EAGAIN.
-          ret = syscall(SYS_getrandom, current, length, GRND_NONBLOCK);
+          ret = __getrandom (current, length, GRND_NONBLOCK);
           // check whether are interrupt by a signal
           if (SNMALLOC_UNLIKELY(ret < 0))
           {
@@ -224,7 +224,7 @@ namespace snmalloc
           {
             current += ret;
           }
-        }
+        } 
         if (SNMALLOC_UNLIKELY(target != current))
         {
           // in this routine, the only possible situations should be ENOSYS
@@ -275,7 +275,7 @@ namespace snmalloc
         //    user-space synchronization scheme) to decide whether to
         //    continue to block or not.
         // We ignore the return and recheck.
-        syscall(
+        __syscall(
           SYS_futex, &addr, FUTEX_WAIT_PRIVATE, expected, nullptr, nullptr, 0);
       }
     }
@@ -287,7 +287,7 @@ namespace snmalloc
       static_assert(
         sizeof(T) == sizeof(WaitingWord) && alignof(T) == alignof(WaitingWord),
         "T must be the same size and alignment as WaitingWord");
-      syscall(SYS_futex, &addr, FUTEX_WAKE_PRIVATE, 1, nullptr, nullptr, 0);
+      __syscall(SYS_futex, &addr, FUTEX_WAKE_PRIVATE, 1, nullptr, nullptr, 0);
     }
 
     template<class T>
@@ -297,7 +297,7 @@ namespace snmalloc
       static_assert(
         sizeof(T) == sizeof(WaitingWord) && alignof(T) == alignof(WaitingWord),
         "T must be the same size and alignment as WaitingWord");
-      syscall(
+      __syscall(
         SYS_futex, &addr, FUTEX_WAKE_PRIVATE, INT_MAX, nullptr, nullptr, 0);
     }
 #  endif

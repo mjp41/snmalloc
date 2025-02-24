@@ -189,7 +189,7 @@ namespace snmalloc
         // by POSIX.1)
         // Notice that clock_gettime is a usually a vDSO call, so the overhead
         // is minimal.
-        ::clock_gettime(CLOCK_MONOTONIC, &buf);
+        ::__clock_gettime(CLOCK_MONOTONIC, &buf);
         return static_cast<uint64_t>(buf.tv_sec) * 1000'000'000 +
           static_cast<uint64_t>(buf.tv_nsec);
 #  undef SNMALLOC_TICK_USE_CLOCK_GETTIME

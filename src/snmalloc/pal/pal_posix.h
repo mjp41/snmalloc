@@ -164,7 +164,7 @@ namespace snmalloc
       auto nptrs = backtrace(buffer, SIZE);
       backtrace_symbols_fd(buffer, nptrs, STDERR_FILENO);
       UNUSED(write(STDERR_FILENO, "\n", 1));
-      UNUSED(fsync(STDERR_FILENO));
+      //UNUSED(__fsync(STDERR_FILENO));
 #endif
     }
 
@@ -178,8 +178,8 @@ namespace snmalloc
 
       void* nl = const_cast<char*>("\n");
       struct iovec iov[] = {{const_cast<char*>(str), strlen(str)}, {nl, 1}};
-      UNUSED(writev(STDERR_FILENO, iov, sizeof(iov) / sizeof(struct iovec)));
-      UNUSED(fsync(STDERR_FILENO));
+      UNUSED(__writev(STDERR_FILENO, iov, sizeof(iov) / sizeof(struct iovec)));
+      //UNUSED(__fsync(STDERR_FILENO));
     }
 
     /**
@@ -194,8 +194,8 @@ namespace snmalloc
       void* nl = const_cast<char*>("\n");
       struct iovec iov[] = {
         {nl, 1}, {const_cast<char*>(str), strlen(str)}, {nl, 1}};
-      UNUSED(writev(STDERR_FILENO, iov, sizeof(iov) / sizeof(struct iovec)));
-      UNUSED(fsync(STDERR_FILENO));
+      UNUSED(__writev(STDERR_FILENO, iov, sizeof(iov) / sizeof(struct iovec)));
+      //UNUSED(__fsync(STDERR_FILENO));
       print_stack_trace();
       abort();
     }
@@ -219,7 +219,7 @@ namespace snmalloc
         if constexpr (Debug)
           memset(p, 0x5a, size);
 
-        mprotect(p, size, PROT_NONE);
+        __mprotect(p, size, PROT_NONE);
       }
       else
       {
@@ -241,7 +241,7 @@ namespace snmalloc
         is_aligned_block<OS::page_size>(p, size) || (zero_mem == NoZero));
 
       if constexpr (mitigations(pal_enforce_access))
-        mprotect(p, size, PROT_READ | PROT_WRITE);
+        __mprotect(p, size, PROT_READ | PROT_WRITE);
       else
       {
         UNUSED(p, size);
@@ -262,7 +262,7 @@ namespace snmalloc
       SNMALLOC_ASSERT(is_aligned_block<OS::page_size>(p, size));
 
       if constexpr (mitigations(pal_enforce_access))
-        mprotect(p, size, PROT_READ);
+        __mprotect(p, size, PROT_READ);
       else
       {
         UNUSED(p, size);
@@ -296,7 +296,7 @@ namespace snmalloc
          */
         auto hold = KeepErrno();
 
-        void* r = mmap(
+        void* r = __mmap(
           p,
           size,
           PROT_READ | PROT_WRITE,
@@ -337,7 +337,7 @@ namespace snmalloc
       auto prot =
         mitigations(pal_enforce_access) ? PROT_NONE : PROT_READ | PROT_WRITE;
 
-      void* p = mmap(
+      void* p = __mmap(
         nullptr,
         size,
         prot,
@@ -391,7 +391,7 @@ namespace snmalloc
       auto hold = KeepErrno();
 
       struct timespec ts;
-      if (clock_gettime(CLOCK_MONOTONIC, &ts) == -1)
+      if (__clock_gettime(CLOCK_MONOTONIC, &ts) == -1)
       {
         error("Failed to get time");
       }
@@ -413,14 +413,14 @@ namespace snmalloc
 #if defined(O_CLOEXEC)
       flags |= O_CLOEXEC;
 #endif
-      auto fd = open("/dev/urandom", flags, 0);
+      auto fd = __open("/dev/urandom", flags, 0);
       if (fd > 0)
       {
         auto current = stl::begin(buffer);
         auto target = stl::end(buffer);
         while (auto length = static_cast<size_t>(target - current))
         {
-          ret = read(fd, current, length);
+          ret = __read(fd, current, length);
           if (ret <= 0)
           {
             if (errno != EAGAIN && errno != EINTR)
@@ -433,7 +433,7 @@ namespace snmalloc
             current += ret;
           }
         }
-        ret = close(fd);
+        ret = __close(fd);
         SNMALLOC_ASSERT(0 == ret);
         if (SNMALLOC_LIKELY(target == current))
         {
