@@ -72,13 +72,20 @@ namespace snmalloc::libc
     }
 
     size_t sz = alloc_size(ptr);
+
+    // Use power of two sizes for realloc growth policy.
+    // This was originally an idea in smalloc.
+    // https://github.com/zooko/smalloc?tab=readme-ov-file#realloc-growers
+    size_t rounded_size_bits = bits::next_pow2_bits(size);
+    size_t rounded_size = size_t(1) << (bits::align_up(rounded_size_bits, 2));
+
     // Keep the current allocation if the given size is in the same sizeclass.
-    if (sz == round_size(size))
+    if (sz == rounded_size)
     {
       return ptr;
     }
 
-    void* p = alloc(size);
+    void* p = alloc(rounded_size);
     if (SNMALLOC_LIKELY(p != nullptr))
     {
       sz = bits::min(size, sz);
