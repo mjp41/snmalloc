@@ -6,8 +6,8 @@ int main()
 }
 #else
 #  include <array>
-#  include <snmalloc/override/new.cc>
-#  include <snmalloc/pal/pal.h>
+#  include <new>
+#  include <snmalloc/snmalloc.h>
 #  include <test/helpers.h>
 #  include <test/setup.h>
 

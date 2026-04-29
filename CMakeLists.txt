@@ -504,6 +504,16 @@ if(NOT SNMALLOC_HEADER_ONLY_LIBRARY)
 
         target_link_libraries(${TESTNAME} snmalloc)
         target_compile_definitions(${TESTNAME} PRIVATE "SNMALLOC_USE_${TEST_CLEANUP}")
+
+        # The new/delete override test links new.cc as an additional source
+        # file so it is compiled with the same flags as the test itself.
+        # -fno-builtin prevents GCC from replacing operator new/delete with
+        # built-in malloc/free at compile time, which would bypass the
+        # custom override being tested.
+        if (${TEST} STREQUAL "new")
+          target_sources(${TESTNAME} PRIVATE src/snmalloc/override/new.cc)
+          target_compile_options(${TESTNAME} PRIVATE -fno-builtin)
+        endif()
         
         if (NOT DEFINES STREQUAL " ")
           target_compile_definitions(${TESTNAME} PRIVATE ${DEFINES})
