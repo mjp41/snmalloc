@@ -1,0 +1,15 @@
+# snmalloc library header installation
+
+install(DIRECTORY aal DESTINATION include/snmalloc)
+install(DIRECTORY backend DESTINATION include/snmalloc)
+install(DIRECTORY backend_helpers DESTINATION include/snmalloc)
+install(DIRECTORY ds DESTINATION include/snmalloc)
+install(DIRECTORY ds_aal DESTINATION include/snmalloc)
+install(DIRECTORY ds_core DESTINATION include/snmalloc)
+install(DIRECTORY global DESTINATION include/snmalloc)
+install(DIRECTORY mem DESTINATION include/snmalloc)
+install(DIRECTORY mitigations DESTINATION include/snmalloc)
+install(DIRECTORY override DESTINATION include/snmalloc)
+install(DIRECTORY pal DESTINATION include/snmalloc)
+install(DIRECTORY stl DESTINATION include/snmalloc)
+install(FILES snmalloc.h snmalloc_core.h snmalloc_front.h DESTINATION include/snmalloc)

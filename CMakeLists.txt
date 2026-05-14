@@ -227,90 +227,8 @@ function(warnings_high)
   endif()
 endfunction()
 
-# clangformat_targets([VERSION <ver>]
-#                     [TARGET_NAME <name>]
-#                     [INCLUDE_PATTERNS <glob> ...]
-#                     [EXCLUDE_PATTERNS <regex> ...])
-#
-# Generate a CMake target that runs clang-format on a set of source files.
-# A companion <name>-check target is also created that verifies formatting
-# without modifying files (--dry-run --Werror), suitable for CI.
-#
-# Options:
-#   VERSION          - clang-format version to search for (default: 15).
-#                      Falls back to the unversioned 'clang-format' with a
-#                      warning if the requested version is not found.
-#   TARGET_NAME      - Name of the generated targets (default: clangformat).
-#   INCLUDE_PATTERNS - Glob patterns passed to file(GLOB_RECURSE) to collect
-#                      source files (default: src/*.cc src/*.h src/*.hh).
-#   EXCLUDE_PATTERNS - Regex patterns used to exclude files from the collected
-#                      list (default: src/[^/]*/[^/]*_concept\.h$).
-function(clangformat_targets)
-  cmake_parse_arguments(
-    CLANGFMT
-    ""
-    "VERSION;TARGET_NAME"
-    "INCLUDE_PATTERNS;EXCLUDE_PATTERNS"
-    ${ARGN}
-  )
-
-  # Default inclusion globs match this project's source layout.
-  if (NOT CLANGFMT_INCLUDE_PATTERNS)
-    set(CLANGFMT_INCLUDE_PATTERNS src/*.cc src/*.h src/*.hh)
-  endif()
-
-  # Default exclusion regexes skip concept headers that clang-format
-  # does not yet handle well.  See https://reviews.llvm.org/D79773
-  if (NOT CLANGFMT_EXCLUDE_PATTERNS)
-    set(CLANGFMT_EXCLUDE_PATTERNS "src/[^/]*/[^/]*_concept\\.h$")
-  endif()
-
-  # Default clang-format version.
-  if (NOT CLANGFMT_VERSION)
-    set(CLANGFMT_VERSION 15)
-  endif()
-
-  # Default target name.
-  if (NOT CLANGFMT_TARGET_NAME)
-    set(CLANGFMT_TARGET_NAME clangformat)
-  endif()
-
-  # The clang-format tool is installed under a variety of different names.  Try
-  # to find a sensible one.  Look for the requested version first, then fall
-  # back to the unversioned name.
-  find_program(CLANG_FORMAT NAMES
-    clang-format${CLANGFMT_VERSION}0
-    clang-format-${CLANGFMT_VERSION})
-
-  if (${CLANG_FORMAT} STREQUAL "CLANG_FORMAT-NOTFOUND")
-    find_program(CLANG_FORMAT NAMES clang-format)
-    if (NOT ${CLANG_FORMAT} STREQUAL "CLANG_FORMAT-NOTFOUND")
-      message(WARNING "Could not find clang-format version ${CLANGFMT_VERSION}, falling back to ${CLANG_FORMAT}")
-    endif()
-  endif()
-
-  # If we've found a clang-format tool, generate a target for it, otherwise emit
-  # a warning.
-  if (${CLANG_FORMAT} STREQUAL "CLANG_FORMAT-NOTFOUND")
-    message(WARNING "Not generating ${CLANGFMT_TARGET_NAME} target, no clang-format tool found")
-  else ()
-    message(STATUS "Generating ${CLANGFMT_TARGET_NAME} target using ${CLANG_FORMAT}")
-    file(GLOB_RECURSE ALL_SOURCE_FILES CONFIGURE_DEPENDS ${CLANGFMT_INCLUDE_PATTERNS})
-    foreach(pattern IN LISTS CLANGFMT_EXCLUDE_PATTERNS)
-      list(FILTER ALL_SOURCE_FILES EXCLUDE REGEX "${pattern}")
-    endforeach()
-    add_custom_target(
-      ${CLANGFMT_TARGET_NAME}
-      COMMAND ${CLANG_FORMAT}
-      -i
-      ${ALL_SOURCE_FILES})
-    add_custom_target(
-      ${CLANGFMT_TARGET_NAME}-check
-      COMMAND ${CLANG_FORMAT}
-      --dry-run --Werror
-      ${ALL_SOURCE_FILES})
-  endif()
-endfunction()
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/clangformat_targets.cmake)
+add_subdirectory(src)
 
 # The main target for snmalloc.  This is the exported target for the
 # header-only configuration and is used as a dependency for all of the builds
@@ -517,159 +435,13 @@ endfunction()
 # To build with just the header library target define SNMALLOC_HEADER_ONLY_LIBRARY
 if(NOT SNMALLOC_HEADER_ONLY_LIBRARY)
 
-  function(subdirlist result curdir)
-    file(GLOB children CONFIGURE_DEPENDS LIST_DIRECTORIES true RELATIVE ${curdir} ${curdir}/* )
-    set(dirlist "")
-    foreach(child ${children})
-      if(IS_DIRECTORY ${curdir}/${child})
-        list(APPEND dirlist ${child})
-      endif()
-    endforeach()
-    set(${result} ${dirlist} PARENT_SCOPE)
-  endfunction()
-
-  set(TESTDIR ${CMAKE_CURRENT_SOURCE_DIR}/src/test)
-
-  if(SNMALLOC_BUILD_TESTING)
-    enable_testing()
-    subdirlist(TEST_CATEGORIES ${TESTDIR})
-  else()
-    set(TEST_CATEGORIES "")
-  endif()
-  list(REVERSE TEST_CATEGORIES)
-
   if (${SNMALLOC_CLEANUP} STREQUAL THREAD_CLEANUP)
     set(TEST_CLEANUP PTHREAD_DESTRUCTORS)
   else ()
     set(TEST_CLEANUP ${SNMALLOC_CLEANUP})
   endif()
 
-  # Tests that only include snmalloc_testlib.h (no snmalloc.h or snmalloc_core.h).
-  # These are mitigation-independent and can be compiled once, then linked
-  # against both fast and check testlib variants.
-  set(TESTLIB_ONLY_TESTS
-    bits first_operation memory memory_usage multi_atexit multi_threadatexit
-    redblack statistics teardown
-    contention external_pointer large_alloc lotsofthreads post_teardown
-    singlethread startup
-  )
 
-  function(make_tests TAG DEFINES)
-    foreach(TEST_CATEGORY ${TEST_CATEGORIES})
-      message(VERBOSE "Adding ${TAG}/${TEST_CATEGORY} tests")
-      subdirlist(TESTS ${TESTDIR}/${TEST_CATEGORY})
-      foreach(TEST ${TESTS})
-        unset(SRC)
-        aux_source_directory(${TESTDIR}/${TEST_CATEGORY}/${TEST} SRC)
-        set(TESTNAME "${TEST_CATEGORY}-${TEST}-${TAG}")
-
-        # Check if this test is testlib-only (mitigation-independent).
-        # If so, compile the source once into an object library and reuse
-        # across flavours.
-        list(FIND TESTLIB_ONLY_TESTS ${TEST} _testlib_only_idx)
-        set(OBJLIBNAME "${TEST_CATEGORY}-${TEST}-obj")
-        if (NOT ${_testlib_only_idx} EQUAL -1 AND NOT TARGET ${OBJLIBNAME})
-          # First flavour to see this test creates the object library.
-          add_library(${OBJLIBNAME} OBJECT ${SRC})
-          target_link_libraries(${OBJLIBNAME} snmalloc)
-          target_compile_definitions(${OBJLIBNAME} PRIVATE "SNMALLOC_USE_${TEST_CLEANUP}")
-          add_warning_flags(${OBJLIBNAME})
-          if(SNMALLOC_SANITIZER)
-            target_compile_options(${OBJLIBNAME} PRIVATE -g -fsanitize=${SNMALLOC_SANITIZER} -fno-omit-frame-pointer)
-            if (${SNMALLOC_SANITIZER} MATCHES "thread")
-              target_compile_definitions(${OBJLIBNAME} PRIVATE SNMALLOC_THREAD_SANITIZER_ENABLED)
-            endif()
-          endif()
-        endif()
-
-        if (NOT ${_testlib_only_idx} EQUAL -1)
-          # Testlib-only: link the shared object library against this
-          # flavour's testlib.
-          add_executable(${TESTNAME} $<TARGET_OBJECTS:${OBJLIBNAME}>)
-        else()
-          add_executable(${TESTNAME} ${SRC})
-        endif()
-
-        # Track every test binary in a global property so the `coverage`
-        # custom target can pass them all to llvm-cov without globbing.
-        set_property(GLOBAL APPEND PROPERTY SNMALLOC_TEST_BINARIES ${TESTNAME})
-
-        if(SNMALLOC_SANITIZER)
-          target_compile_options(${TESTNAME} PRIVATE -g -fsanitize=${SNMALLOC_SANITIZER} -fno-omit-frame-pointer)
-          target_link_libraries(${TESTNAME} -fsanitize=${SNMALLOC_SANITIZER})
-          if (${SNMALLOC_SANITIZER} MATCHES "thread")
-            target_compile_definitions(${TESTNAME} PRIVATE SNMALLOC_THREAD_SANITIZER_ENABLED)
-          endif()
-        endif()
-
-        add_warning_flags(${TESTNAME})
-
-        target_link_libraries(${TESTNAME} snmalloc)
-        # Link the pre-compiled test library into all tests.  For tests
-        # that include snmalloc.h directly the linker will simply discard
-        # the duplicate inline definitions (ODR-safe).
-        target_link_libraries(${TESTNAME} snmalloc-testlib-${TAG})
-        target_compile_definitions(${TESTNAME} PRIVATE "SNMALLOC_USE_${TEST_CLEANUP}")
-        
-        if (NOT DEFINES STREQUAL " ")
-          target_compile_definitions(${TESTNAME} PRIVATE ${DEFINES})
-        endif()
-
-        if (${TEST} MATCHES "release-.*")
-          message(VERBOSE "Adding test: ${TESTNAME} only for release configs")
-          add_test(NAME ${TESTNAME} COMMAND ${TESTNAME} --smoke
-                   CONFIGURATIONS "Release")
-        else()
-          message(VERBOSE "Adding test: ${TESTNAME}")
-          add_test(NAME ${TESTNAME} COMMAND ${TESTNAME} --smoke)
-        endif()
-        if (${TEST_CATEGORY} MATCHES "perf")
-          message(VERBOSE "Single threaded test: ${TESTNAME}")
-          set_tests_properties(${TESTNAME} PROPERTIES PROCESSORS 4)
-        endif()
-        if (SNMALLOC_COVERAGE)
-          # Per-test LLVM_PROFILE_FILE so cached coverage runs can
-          # invalidate one test's profiles without touching the rest.
-          set_tests_properties(${TESTNAME} PROPERTIES ENVIRONMENT
-            "LLVM_PROFILE_FILE=${CMAKE_BINARY_DIR}/profiles/${TESTNAME}/%p-%m.profraw")
-        endif()
-        if(WIN32)
-          # On Windows these tests use a lot of memory as it doesn't support
-          # lazy commit.
-          if (${TEST} MATCHES "two_alloc_types")
-            message(VERBOSE "Single threaded test: ${TESTNAME}")
-            set_tests_properties(${TESTNAME} PROPERTIES PROCESSORS 4)
-          endif()
-          if (${TEST} MATCHES "fixed_region")
-            message(VERBOSE "Single threaded test: ${TESTNAME}")
-            set_tests_properties(${TESTNAME} PROPERTIES PROCESSORS 4)
-          endif()
-          if (${TEST} MATCHES "memory")
-            message(VERBOSE "Single threaded test: ${TESTNAME}")
-            set_tests_properties(${TESTNAME} PROPERTIES PROCESSORS 4)
-          endif()
-        endif()
-      endforeach()
-    endforeach()
-  endfunction()
-
-  function(build_test_library TAG DEFINES)
-    set(LIBNAME snmalloc-testlib-${TAG})
-    add_library(${LIBNAME} STATIC src/test/snmalloc_testlib.cc)
-    target_link_libraries(${LIBNAME} PRIVATE snmalloc)
-    set_target_properties(${LIBNAME} PROPERTIES INTERFACE_LINK_LIBRARIES "")
-    target_compile_definitions(${LIBNAME} PRIVATE "SNMALLOC_USE_${TEST_CLEANUP}")
-    if (NOT DEFINES STREQUAL " ")
-      target_compile_definitions(${LIBNAME} PRIVATE ${DEFINES})
-    endif()
-    if(SNMALLOC_SANITIZER)
-      target_compile_options(${LIBNAME} PRIVATE -g -fsanitize=${SNMALLOC_SANITIZER} -fno-omit-frame-pointer)
-      if (${SNMALLOC_SANITIZER} MATCHES "thread")
-        target_compile_definitions(${LIBNAME} PRIVATE SNMALLOC_THREAD_SANITIZER_ENABLED)
-      endif()
-    endif()
-    add_warning_flags(${LIBNAME})
-  endfunction()
 
   if(NOT (DEFINED SNMALLOC_LINKER_FLAVOUR) OR ("${SNMALLOC_LINKER_FLAVOUR}" MATCHES "^$"))
     # Linker not specified externally; probe to see if we can make lld work
@@ -802,22 +574,10 @@ if(NOT SNMALLOC_HEADER_ONLY_LIBRARY)
     target_compile_definitions(snmallocshim-checks-rust PRIVATE SNMALLOC_CHECK_CLIENT)
   endif()
 
-  if (SNMALLOC_BUILD_TESTING)
-    set(FLAVOURS fast;check)
+  # Add subdirectory for test configuration
+  add_subdirectory(src/test)
 
-    foreach(FLAVOUR ${FLAVOURS})
-      if (${FLAVOUR} STREQUAL "check")
-        set(DEFINES SNMALLOC_CHECK_CLIENT)
-      endif()
-      if (${FLAVOUR} STREQUAL "fast")
-        set(DEFINES " ")
-      endif()
-
-      build_test_library(${FLAVOUR} ${DEFINES})
-      make_tests(${FLAVOUR} ${DEFINES})
-    endforeach()
-  endif()
-
+  # Build individual mitigation shims and their tests
   if (SNMALLOC_BENCHMARK_INDIVIDUAL_MITIGATIONS)
     set (MITIGATIONS 
       metadata_protection;
@@ -832,7 +592,6 @@ if(NOT SNMALLOC_HEADER_ONLY_LIBRARY)
       random_initial;
       random_preserve;
       random_extra_slab)
-
 
     foreach (MITIGATION ${MITIGATIONS})
       set(DEFINES "SNMALLOC_CHECK_CLIENT_MITIGATIONS=${MITIGATION}")
@@ -858,10 +617,6 @@ if(NOT SNMALLOC_HEADER_ONLY_LIBRARY)
       endif()
     endforeach()
   endif()
-
-  if (SNMALLOC_BUILD_TESTING)
-    clangformat_targets()
-  endif ()
 
   # Coverage target. Generates a unified coverage.profdata +
   # coverage.json for all test binaries.
@@ -933,27 +688,8 @@ install(TARGETS snmalloc EXPORT snmallocConfig)
 install(TARGETS EXPORT snmallocConfig DESTINATION ${CMAKE_INSTALL_LIBDIR}
   PUBLIC_HEADER DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/snmalloc)
 
-install(DIRECTORY src/snmalloc/aal DESTINATION include/snmalloc)
-install(DIRECTORY src/snmalloc/backend DESTINATION include/snmalloc)
-install(DIRECTORY src/snmalloc/backend_helpers DESTINATION include/snmalloc)
-install(DIRECTORY src/snmalloc/ds DESTINATION include/snmalloc)
-install(DIRECTORY src/snmalloc/ds_aal DESTINATION include/snmalloc)
-install(DIRECTORY src/snmalloc/ds_core DESTINATION include/snmalloc)
-install(DIRECTORY src/snmalloc/global DESTINATION include/snmalloc)
-install(DIRECTORY src/snmalloc/mem DESTINATION include/snmalloc)
-install(DIRECTORY src/snmalloc/mitigations DESTINATION include/snmalloc)
-install(DIRECTORY src/snmalloc/override DESTINATION include/snmalloc)
-install(DIRECTORY src/snmalloc/pal DESTINATION include/snmalloc)
-install(DIRECTORY src/snmalloc/stl DESTINATION include/snmalloc)
-install(FILES
-    src/test/measuretime.h
-    src/test/opt.h
-    src/test/setup.h
-    src/test/usage.h
-    src/test/xoroshiro.h
-  DESTINATION include/snmalloc/test
-)
-install(FILES src/snmalloc/snmalloc.h;src/snmalloc/snmalloc_core.h;src/snmalloc/snmalloc_front.h DESTINATION include/snmalloc)
+# Add subdirectory for snmalloc header installation
+add_subdirectory(src/snmalloc)
 
 install(EXPORT snmallocConfig
   FILE snmalloc-config.cmake
