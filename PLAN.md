@@ -842,36 +842,40 @@ The current `RBTree` exposes `find`, `remove_min`, `remove_path` (taking
 an `RBPath`). For Range-tree adjacency lookups we don't need predecessor
 and successor as independent operations — we always want **both
 neighbours of a probe value** when classifying an incoming block. A
-single tree walk for `K` already records exactly that information: the
-last "go-right" descent (the parent of the failed left-child step)
-points at the largest entry strictly less than `K`; the last "go-left"
-descent points at the smallest entry strictly greater than `K`.
+single tree walk for `K` already records exactly that information: every
+"go-right" descent passes through a node with key strictly less than `K`
+(predecessor candidate); every "go-left" descent passes through a node
+with key strictly greater than `K` (successor candidate). The last turn
+of each kind is the tight answer.
 
 Add a single helper:
 
-- `neighbours(K) -> stl::Pair<NodeRef, NodeRef>` — performs one walk for
-  `K` and returns `(largest entry < K, smallest entry > K)`. Either may
-  be null. If `K` is itself present in the tree, the result describes
-  the neighbours of the existing entry; the caller decides whether that
-  is a bug (overlap) for its problem domain — `BackendArena` will treat
-  an exact hit as an invariant violation, since two free blocks cannot
-  share a starting address.
+- `neighbours(K) -> stl::Pair<K, K>` — performs one walk for `K` and
+  returns `(largest entry < K, smallest entry > K)`. Either component
+  is `Rep::null` when no such neighbour exists.
+  **Precondition**: `K` is not present in the tree. This matches the
+  `BackendArena` use case (two free blocks cannot share a starting
+  address, so `add_block` only calls `neighbours` on addresses not
+  already in the tree); in Debug an assert fires if `K` is encountered
+  on the descent.
 
 This replaces two separate `O(log n)` walks per `add_block` with one and
-keeps the API surface small. Implement on top of the existing `RBPath`
-walking primitives — no structural changes to `RBTree` required.
+keeps the API surface small. Implement on top of the existing tree
+walking primitives (`get_root`, `get_dir`) — no structural changes to
+`RBTree` required.
 
 **Test gate**: extend `src/test/func/redblack/redblack.cc` with a
 randomised test of `neighbours(K)` against `std::set::lower_bound` /
-`upper_bound` as oracle, over thousands of operations and probe values.
-Existing tests must remain green.
+`upper_bound` as oracle, over thousands of operations and probe values
+drawn from `K` values **not** present in the tree. Existing tests must
+remain green.
 
 **Review gate**: spec slice = the Phase 2 section above. Reviewer
 checks: walk correctly records both turn points; behaviour at empty
 tree, single-node tree, `K` smaller than all keys, `K` larger than all
-keys, `K` equal to existing key, and `K` between two consecutive keys
-all match the oracle; no structural changes to `RBTree`'s existing
-invariants.
+keys, and `K` between two consecutive keys all match the oracle; the
+"K not in tree" precondition is asserted in Debug; no structural
+changes to `RBTree`'s existing invariants.
 
 ### Phase 3: Rep concept + skeleton BackendArena
 

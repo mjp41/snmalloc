@@ -1,6 +1,7 @@
 #pragma once
 
 #include "snmalloc/stl/array.h"
+#include "snmalloc/stl/utility.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -785,6 +786,43 @@ namespace snmalloc
 
       insert_path(path, value);
       return true;
+    }
+
+    /**
+     * Return the strict neighbours of `value` in the tree:
+     * `(largest key < value, smallest key > value)`. Either component is
+     * `Rep::null` when no such neighbour exists.
+     *
+     * **Precondition**: `value` is not present in the tree. A single
+     * root-to-leaf descent then records both neighbours: every left
+     * turn (parent key > value) updates the successor candidate to the
+     * parent's key, every right turn updates the predecessor candidate.
+     * In Debug an assert fires if `value` is encountered on the descent.
+     */
+    stl::Pair<K, K> neighbours(K value)
+    {
+      K pred = Rep::null;
+      K succ = Rep::null;
+
+      ChildRef cur = get_root();
+      while (!cur.is_null())
+      {
+        K k = cur;
+        SNMALLOC_ASSERT(!Rep::equal(k, value));
+        if (Rep::compare(k, value))
+        {
+          // k > value: go left; k is the tightest successor seen so far.
+          succ = k;
+          cur = get_dir(true, k);
+        }
+        else
+        {
+          pred = k;
+          cur = get_dir(false, k);
+        }
+      }
+
+      return {pred, succ};
     }
 
     RBPath get_root_path()
