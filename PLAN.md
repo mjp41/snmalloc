@@ -16,8 +16,9 @@ Note that for block of the minimum size will be handled specially as there is in
 We use 2 bits to represent the mode of this block of memory
 
 00 - Minimum size, only in first red-black tree.  Single pagemap entry for this block is used for the RB-tree
-01 - 2 * minimum size, in both red-black trees.  Two pagemap entries for this block are used for the RB-tree
+01 - 2 * minimum size (2-aligned), in both red-black trees.  Two pagemap entries for this block are used for the RB-tree
 10 - > 2 * minimum size, in both red-black trees.  Three pagemap entries used for this block, first two redblack tree, third stores accurate size of block.
+11 - 2 * minimum size (NOT 2-aligned), in both red-black trees.  Two pagemap entries for this block are used for the RB-tree.  Goes into a size-1 bin since it cannot serve aligned size-2 requests.
 
 This means it is possible to find the precise size of a block which can account for additional state that is lost by the binning.
 
@@ -157,11 +158,38 @@ entry per chunk. The first pagemap entry of a free block carries a
 **variant tag** that tells `BackendArena` how to interpret the other
 entries in the block:
 
-| Variant     | Block size     | Pagemap entries used by BackendArena                                   |
-|-------------|----------------|------------------------------------------------------------------------|
-| `Min`       | exactly min    | 1 entry — both words store the Bin RBTree node (left/right + colour).  |
-| `TwoMin`    | exactly 2× min | 2 entries — first stores Bin node, second stores Range node.            |
-| `Large`     | > 2× min       | 3 entries — first Bin, second Range, third stores precise block size.   |
+| Variant     | Value | Block size     | Alignment      | Pagemap entries used by BackendArena                                   |
+|-------------|-------|----------------|----------------|------------------------------------------------------------------------|
+| `Min`       | 0     | exactly min    | any            | 1 entry — both words store the Bin RBTree node (left/right + colour).  |
+| `TwoMin`    | 1     | exactly 2× min | 2-aligned      | 2 entries — first stores Bin node, second stores Range node.            |
+| `Large`     | 2     | > 2× min       | any            | 3 entries — first Bin, second Range, third stores precise block size.   |
+| `OddTwo`    | 3     | exactly 2× min | **not** 2-aligned | 2 entries — first stores Bin node, second stores Range node.          |
+
+#### Unaligned size-2 blocks (`OddTwo`)
+
+A size-2 block at an odd chunk address (e.g. chunk 3) cannot serve any
+size-2 allocation request because all size-2 SCs require 2-chunk
+alignment. `bin_index({odd, 2})` correctly places such blocks into a
+size-1 bin. However, the `Min` variant can only store one pagemap entry,
+and a size-2 block occupies two entries and participates in the range
+tree.
+
+The `OddTwo` variant resolves this: it marks a size-2 block that is not
+2-aligned. Like `TwoMin`, it uses two pagemap entries and lives in the
+range tree. Unlike `TwoMin`, it goes into a size-1 bin (since it can't
+serve aligned size-2 requests).
+
+The consolidation code's `contains_min` check probes bin 0 for
+single-chunk neighbours. Since `OddTwo` blocks also land in bin 0
+(both `Min` and `OddTwo` have a size-1 servable set at exponent 0),
+`contains_min` must filter by variant: after finding an address in
+bin 0, it checks `get_variant(addr) == Min` to confirm the block is
+truly single-chunk. `OddTwo` blocks are found via range-tree neighbour
+lookup instead, which correctly returns their size as 2.
+
+Note: only blocks at even chunk addresses can be `TwoMin`. The
+`variant_of` function must take both size and chunk address to
+distinguish `TwoMin` from `OddTwo`.
 
 **Tree membership is the source of truth for "is this block free?".**
 The variant tag is only meaningful for entries `BackendArena` reaches via
@@ -223,10 +251,12 @@ For an incoming block `A` of size `S` at address `addr_A`:
 - If no non-min right neighbour was found: `MinSizeBin.find(addr_A +
   size_A)`; if present, merge.
 
-`MinSizeBin` is the single Bin RBTree that holds all min-size free blocks
-(the bin whose servable set is `{1 chunk}`). Its `find` operation is a
-standard RB-tree key lookup (O(log n)), and only traverses entries already
-linked into the tree — i.e. entries owned by *this* `BackendArena`.
+`MinSizeBin` is the single Bin RBTree that holds all blocks whose
+servable set is `{1 chunk}` (bin 0). This includes both `Min` (size-1)
+and `OddTwo` (unaligned size-2) blocks. The `contains_min` helper
+performs a `find` in bin 0, then checks `get_variant(addr) == Min` to
+confirm the block is truly single-chunk — `OddTwo` entries are skipped
+so they are handled by the range-tree neighbour lookup instead.
 
 Min-size adjacency therefore costs at most one Bin-tree `find` per side
 per `add_block`. The Range-tree `neighbours(addr_A)` query yields both
@@ -877,240 +907,124 @@ keys, and `K` between two consecutive keys all match the oracle; the
 "K not in tree" precondition is asserted in Debug; no structural
 changes to `RBTree`'s existing invariants.
 
-### Phase 3: Rep concept + skeleton BackendArena
+### Phase 3+4: Full BackendArena data structure (atomic)
 
 Create `src/snmalloc/backend_helpers/backend_arena.h` with:
 
-- A `BackendArenaRep` concept describing the operations the data
-  structure needs from its backing pagemap, in **chunk-keyed** form
-  (callers pass `addr` aligned to `MIN_CHUNK_SIZE`):
-  - `get_variant(addr) -> {Min, TwoMin, Large}` and `set_variant`.
-  - First-entry word accessors: `get_word1/set_word1` and
-    `get_word2/set_word2`, preserving `RED_BIT` *and* the variant-tag
-    bits on every write.
-  - Second-entry word accessors (used for `TwoMin` and `Large`): same
-    `get_word1/set_word1/get_word2/set_word2` shape, applied to the
-    pagemap entry at `addr + MIN_CHUNK_SIZE`. (No variant-tag preservation
-    rule here; only `RED_BIT`.)
-  - Third-entry size accessor (used only for `Large`):
-    `get_large_size_chunks(addr)/set_large_size_chunks(addr, n_chunks)`
-    backed by the entry at `addr + 2·MIN_CHUNK_SIZE`.
-  - **No** pagemap-probing API. All adjacency is performed via the
-    BackendArena's own RBTree finds.
-- Two internal RBRep adapters built **inside** `BackendArena` (not in
-  user code) on top of `BackendArenaRep`:
-  - **`BinRep`**: keys by chunk-aligned address; uses the first-entry
-    word accessors; encodes the red-black `colour` bit in `RED_BIT` of
-    word 1; left/right child pointers occupy chunk-aligned bits of the
-    two words.
-  - **`RangeRep`**: keys by chunk-aligned address; uses the second-entry
-    word accessors; same `RED_BIT` colour and left/right encoding. Only
-    consulted for `TwoMin` and `Large` blocks (min-size blocks have no
-    second entry and are not in the Range tree).
-  - Each adapter satisfies the existing `RBTree` Rep concept (the same
-    set of operations `BuddyChunkRep` satisfies for `largebuddyrange`'s
-    tree).
-- `template<BackendArenaRep Rep, size_t MIN_CHUNKS_BITS,
-   size_t MAX_CHUNKS_BITS> class BackendArena` with the following API:
-  - `add_block(addr, size_chunks) -> stl::Pair<addr_t, size_t>` —
-    returns `{0, 0}` if the block was absorbed; returns
-    `{overflow_addr, overflow_size}` (non-zero) for the portion the
-    arena cannot index. Mirrors `Buddy::add_block`'s overflow-return
-    contract; the caller (a future `BackendArenaRange` wrapper) is
-    responsible for handling overflow. Overflow arises in two cases:
-    (i) the input is oversized — `size_chunks >= 2^MAX_CHUNKS_BITS`
-    is split and the excess returned; the absorbed prefix continues
-    through consolidation. (ii) **consolidation grew the block to
-    arena scale** — if neighbour coalescing produces a range of
-    `2^MAX_CHUNKS_BITS` chunks (the entire arena), that consolidated
-    range is returned as overflow because the bitmap / per-sc tables
-    are sized for `< 2^MAX_CHUNKS_BITS`. In case (ii) the merged
-    neighbours are already removed from the trees before the return.
-  - `remove_block(size_t n_chunks) -> stl::Pair<addr_t, size_t>` —
-    returns `{0, 0}` if nothing serves the request; otherwise the
-    `(base, size)` of the aligned request range returned by
-    `BackendArenaBins<B>::carve(...).req`. Phase 3 leaves this
-    a stub; Phase 4 implements it (popping a larger block and carving
-    internally as needed).
-- The invariant method (initially a no-op).
-- **Static assertions** pinning the relationship between BackendArena's
-  bound and the bin-scheme's representable maximum:
-  - `static_assert(MAX_CHUNKS_BITS < bits::BITS, ...)` so that
-    `2^MAX_CHUNKS_BITS` and `bits::one_at_bit(MAX_CHUNKS_BITS)` are
-    representable in `size_t`.
-  - `static_assert(bits::one_at_bit(MAX_CHUNKS_BITS) <=
-    BackendArenaBins<B>::max_supported_chunks() + 1, ...)` so that
-    every block size the arena can hold (strictly less than
-    `2^MAX_CHUNKS_BITS`) is classifiable by `bin_index` /
-    `bitmap_info_for_request` / `carve_info_for_request` without
-    hitting their upper-bound assertions.
+- A `BackendArenaRep` concept describing word-level accessors over the
+  three pagemap entries, the variant tag, and the large-size accessor:
+  - `get_variant(addr) -> BackendArenaVariant` / `set_variant`
+  - `get_word1(addr)` / `set_word1`, `get_word2(addr)` / `set_word2`
+    (first entry, used by BinRep)
+  - `get_range_word1(addr)` / `set_range_word1`,
+    `get_range_word2(addr)` / `set_range_word2` (second entry, used
+    by RangeRep)
+  - `get_large_size_chunks(addr)` / `set_large_size_chunks` (third
+    entry)
+  - Rep word setters preserve only `BACKEND_RESERVED_MASK` (bits 0–7).
+    RED_BIT and VARIANT_MASK preservation is handled by the adapters
+    via read-modify-write.
 
-Create a mock Rep in the test using a fixed-size pagemap array (in the
-spirit of `redblack.cc`'s `array[2048]`). The mock Rep implements
-`get_variant`/`set_variant` and the word/size accessors on its array;
-no probing API to implement.
+- Two internal RBRep adapters:
+  - **BinRep**: tagged `BinHandle` (root-pointer mode or child-slot
+    mode dispatching to Rep word1/word2). `META_MASK = RED_BIT |
+    VARIANT_MASK` preserved on `set`.
+  - **RangeRep**: tagged `RangeHandle` dispatching to Rep
+    range_word1/range_word2. Same `META_MASK` (paranoid masking
+    defends against stale variant bits from pagemap reuse).
+  - Both: `compare(k1, k2) = k1 > k2` so `remove_min` returns the
+    lowest address. `null = root = 0`.
 
-This phase does **not** modify `BuddyChunkRep` or `largebuddyrange.h`.
-All new encoding documentation lives in `backend_arena.h` next to the
-new Rep concept.
+- `BackendArena<Rep, MIN_CHUNKS_BITS, MAX_CHUNKS_BITS>`:
+  - `B = 2` hardcoded; `INTERMEDIATE_BITS` wiring deferred.
+  - `MIN_CHUNKS_BITS == 0` only; larger min values deferred.
+  - `stl::Array<BinTree, Bins::Bitmap::TOTAL_BINS> bin_trees`
+  - `RangeTree range_tree`
+  - `Bins::Bitmap bitmap`
 
-**Test gate**: "accessor smoke test" inside
-`src/test/func/backend_arena/backend_arena.cc`:
+- Full `add_block(addr, size_chunks)` with consolidation:
+  - Uses `range_tree.neighbours(addr)` + `contains_min()` for
+    adjacency.
+  - Unlinks merged neighbours from both trees and bitmap.
+  - Returns overflow `{c_addr, c_size}` when consolidation grows to
+    arena scale (case (ii)); returns `{0, 0}` on success.
+  - Asserts `addr != 0`, alignment, and size bounds.
 
-- Write each variant tag (`Min`, `TwoMin`, `Large`) at a chunk address,
-  read it back; assert each round-trip preserves the value and does
-  not corrupt `RED_BIT` or other reserved bits.
-- **Cross-preservation**: in the first-entry word, interleave
-  `set_variant`, Bin-node `set` (writing left/right), and `set_red` in
-  every order, then verify all three values round-trip correctly.
-- Write Bin node fields (left/right pointer, colour bit), read back
-  unchanged.
-- Write Range node fields, read back unchanged.
-- Write a precise chunk count in the third entry, read back unchanged.
-- `BackendArena<MockRep, 0, K>` instantiates for several `K`, and its
-  `invariant()` returns true on an empty arena.
-- `add_block(addr, size_chunks)` for `size_chunks >= 2^K` returns the
-  overflow portion via its return value; `add_block` for
-  `size_chunks < 2^K` returns `{0, 0}`.
+- Full `remove_block(n_chunks)` with carving:
+  - `bitmap.find_for_request(n_chunks)` → peek min via Rep →
+    remove from trees → `Bins::carve` → recursive `add_block` for
+    remainders.
 
-**Review gate**: spec slice = "Block size variants and pagemap encoding",
-"Write ordering within add/remove", and the Phase 3 section above.
-Reviewer checks: `BackendArenaRep` concept is the minimum needed to
-express the data structure (no leak of internal `RBTree` Rep shape into
-user-facing `BackendArenaRep`); `BinRep`/`RangeRep` adapters preserve
-`RED_BIT` and variant-tag bits on writes; chunk-keyed API used
-consistently; bit-position choices documented in `backend_arena.h` (not
-in `BuddyChunkRep`); no `<cstdint>` or `std::` types in
-production headers (use `<stdint.h>` and `snmalloc::stl::*`);
-`SNMALLOC_*` macros used in place of raw compiler attributes.
+- Five-clause `invariant()`:
+  1. Maximally consolidated (range-tree adjacency + min-block adjacency)
+  2. Cross-tree consistency (forward and reverse membership checks)
+  3. Bin classification correctness
+  4. Bitmap consistency
+  5. Variant-tag consistency
 
-### Phase 4: Full add_block / remove_block with carving and consolidation
+- `get_root_key()` added to `RBTree` (public method, returns root key
+  or `Rep::null` when empty).
 
-Implement the full data-structure semantics in one step. Carving on
-`remove_block` and consolidation on `add_block` are interdependent for
-the maximally-consolidated invariant — carving without consolidation
-produces adjacent free remainders that violate the invariant — so they
-land together. The reuse-`P`'s-Range-entry optimisation is deferred to
-Phase 5; this phase uses the simple "remove + reinsert" strategy for
-every merge.
+- `Bitmap::test(size_t bin_id)` added to `BackendArenaBins` (read-only
+  accessor used by `invariant()`).
 
-**Ownership and serialisation**: `BackendArena` mutations are
-serialised and owned at this layer (the upper layer that wraps an
-arena holds exclusive access for the duration of a single
-`add_block` / `remove_block`). Transient bitmap states during one
-operation — e.g. a bin cleared just before its remainder is re-added
-to the same bin — are never observable to a concurrent reader. The
-Bin / Range trees and the `Bitmap` are per-arena and not concurrent
-in this design (per the broader plan: the bitmap and trees lead
-indexing; the pagemap is not probed for routing).
+Modifications to existing files:
+- `src/snmalloc/backend_helpers/backend_arena_bins.h`: added
+  `Bitmap::test()` and made `bin_index` public.
+- `src/snmalloc/ds_core/redblacktree.h`: added `get_root_key()`.
+- `CMakeLists.txt`: added `backend_arena` to `TESTLIB_ONLY_TESTS`.
 
-**Tree mutation contracts**: Bin and Range trees are intrusive
-red-black trees backed directly by the pagemap (per the
-`backend_arena.h` Rep). `insert` and `remove` are allocation-free and
-infallible for well-formed inputs; duplicate insertion and removal of
-a non-present node are programmer errors and assert. The
-`bitmap.add(range) -> bin_id` step followed by
-`bin_trees[bin_id].insert(range)` cannot leave a set bitmap bit
-without a corresponding tree entry, because `insert` cannot fail.
+**Test gate**: `src/test/func/backend_arena/backend_arena.cc` with
+MockRep and 8 test stages (A–H):
+- (A) Accessor round-trips
+- (B) RBTree smoke via arena
+- (C) Empty-state invariant for K ∈ {4, 5, 6}
+- (D) add_block without consolidation
+- (E) remove_block exact + carving
+- (F) Consolidation case matrix (8 cases: all P/S × min/non-min)
+- (G) Overflow (interleaved + precise)
+- (H) Randomised stress (50 seeds × 500 ops) with Oracle using
+  `Bins::Bitmap` for exact bin-classification matching
 
-- `add_block(addr, size_chunks)`:
-  - If `size_chunks >= 2^MAX_CHUNKS_BITS`, return the excess as overflow
-    per the Phase 3 contract; the absorbed prefix continues below.
-  - Find adjacencies per the "Adjacency lookup" rules (one
-    `Range.neighbours` call + at most two `MinSizeBin.find` calls).
-  - For each merge case (P-only, S-only, P+S, all combinations of
-    min/non-min P and S), update the trees in this order:
-    1. For each merged neighbour `n_range`:
-       `size_t n_bin = bitmap.add(n_range);` — idempotent classify
-       (the bit is already set since `n_range` is in the tree); this
-       is the only public way to obtain the neighbour's bin id.
-       Then `bin_trees[n_bin].remove(n_range)` (and remove from the
-       Range tree if non-min).
-       **Then** `if (bin_trees[n_bin].empty()) bitmap.clear(n_bin);`.
-       The cleared bin id is the *neighbour's old bin*, not the
-       consolidated bin.
-    2. Compute the consolidated range `c_range`. If
-       `c_range.size >= 2^MAX_CHUNKS_BITS` (this can only happen when
-       the entire arena has coalesced into one free block, giving
-       `c_range.size == 2^MAX_CHUNKS_BITS`), the consolidated range
-       exceeds what the arena can index — the bitmap bin space and
-       per-sc tables are sized for `< 2^MAX_CHUNKS_BITS`. Return
-       `c_range` as overflow to the caller (the merged neighbours
-       have already been removed in step 1; the arena is now empty
-       and the caller — typically a future `BackendArenaRange`
-       wrapper — decides whether to return the arena to its parent
-       pool). Otherwise:
-       `size_t c_bin = bitmap.add(c_range)` and
-       `bin_trees[c_bin].insert(c_range)`.
-  - Write variant tag and (for `Large`) precise chunk count before
-    inserting into the Bin tree, per "Write ordering within add/remove".
-- `remove_block(size_t n_chunks)`:
-  - `size_t bin_id = bitmap.find_for_request(n_chunks);` — returns
-    `SIZE_MAX` if no bin in this arena serves the request.
-  - Pop the lowest-address block as `range_t block` from
-    `bin_trees[bin_id]` (`remove_min`); if the tree is now empty,
-    `bitmap.clear(bin_id)`.
-  - `auto c = BackendArenaBins<B>::carve(block, n_chunks);` — splits
-    into `pre` / `req` / `post`.
-  - For each non-empty remainder (`c.pre`, `c.post`), call `add_block`
-    on it. Remainders may have arbitrary, non-class chunk counts;
-    `Bitmap::add` (called inside `add_block`) handles this via
-    `bin_index`. Consolidation cannot extend a remainder back into
-    the request range or its sibling remainder: the popped block is
-    gone from the trees, and `pre`, `req`, and `post` are mutually
-    contiguous (a remainder's neighbour on the request side is the
-    just-returned `req` range, which is *not* free).
-  - Return `c.req`.
+### Phase 5: `OddTwo` variant for unaligned size-2 blocks
 
-Full invariant enabled, including the **maximally consolidated** clause.
+A size-2 block at an odd chunk address cannot serve size-2 requests
+(which require 2-chunk alignment). `bin_index({odd, 2})` correctly
+places it in bin 0 (size-1 servable set). But:
 
-**Test gate** — new test
-`src/test/func/backend_arena/backend_arena.cc` (top-level test-glob
-discovery, matching `src/test/func/redblack/`):
+1. `Min` variant uses only 1 pagemap entry; a size-2 block needs 2.
+2. `contains_min` probes bin 0 for single-chunk neighbours — finding
+   a size-2 block there and treating it as size 1 corrupts metadata.
 
-- Unit tests for each consolidation case: P-only, S-only, P+S, with
-  min/min, min/non-min, non-min/min, non-min/non-min combinations of
-  P and S.
-- Carving tests: request a size strictly smaller than any free block;
-  verify the returned block has the requested size class, that the
-  prefix/suffix remainders are correctly classified, and that bin /
-  Range tree / pagemap variant tags are consistent.
-- Overflow tests:
-  - **Oversized input**: `add_block` for `size_chunks >=
-    2^MAX_CHUNKS_BITS` returns the unabsorbed portion; smaller blocks
-    return `{0, 0}`.
-  - **Consolidation-grows-to-arena-scale**: fill the arena from
-    multiple sub-arena pieces such that the last `add_block` makes
-    the running consolidation cover the whole arena
-    (`c_range.size == 2^MAX_CHUNKS_BITS`); assert the consolidated
-    range is returned as overflow, and that both trees and the
-    bitmap are empty after the call.
-- Smoke test: insert N blocks, remove N blocks via exact size-class
-  requests; final state is empty.
-- Randomised stress test: random `add_block(addr, size_chunks)` /
-  `remove_block(n_chunks)` sequence against an oracle that models the
-  **same** selection rule — "smallest serving bin via
-  `bitmap.find_for_request`, lowest-address block within that bin,
-  carve via `BackendArenaBins<B>::carve`". The oracle is implemented as
-  a sorted map of free `(addr, size_chunks)` pairs (using whatever the
-  existing test files use; `redblack.cc` already uses `std::set`).
-  After each operation, both `invariant()` and a structural comparison
-  against the oracle must pass.
+All changes are in `backend_arena.h` and the test file.
 
-**Review gate**: spec slice = "Adjacency lookup", "Consolidation:
-reusing tree entries when possible" (note: this phase uses the simple
-strategy only — reviewer should flag any premature optimisation),
-"Min-size special case", "Write ordering within add/remove",
-"Invariants", and the Phase 4 section above. Reviewer checks: all eight
-P/S min×non-min consolidation cases handled; write ordering correct
-(variant tag and precise size written before tree insertion; removal
-from trees before pagemap reuse); maximally-consolidated invariant
-holds after every operation; remove → carve → re-add path does not
-infinitely recurse (a remainder block re-entering `add_block` cannot
-itself consolidate into something larger than what was just popped, but
-this should be argued explicitly).
+1. **Add `OddTwo = 3`** to `BackendArenaVariant` enum.
+2. **Change `variant_of`** to take `(size_chunks, chunk_index)`:
+   - size 1 → `Min`
+   - size 2, even chunk → `TwoMin`
+   - size 2, odd chunk → `OddTwo`
+   - size 3+ → `Large`
+3. **Update `range_from_addr`**: `OddTwo` returns `{addr, 2}` (same as
+   `TwoMin`).
+4. **Update `insert_block`**: pass `addr_to_chunk(addr)` to `variant_of`.
+   The `if (size_chunks >= 2)` range-tree checks already cover `OddTwo`.
+5. **Update `contains_min`**: after finding addr in bin 0, check
+   `Rep::get_variant(addr) == BackendArenaVariant::Min`. Return false
+   for `OddTwo` entries.
+6. **Update invariant clause 5**: pass chunk address to `variant_of`.
+7. **Update invariant clause 1c** ("no two adjacent min blocks"):
+   skip non-`Min` entries in bin 0 (i.e., `OddTwo` blocks).
+8. **Add test cases**:
+   - Odd-address size-2 block: verify variant is `OddTwo`, goes in
+     correct bin, lives in range tree.
+   - Consolidation with `OddTwo` predecessor/successor.
+   - `contains_min` does not match `OddTwo` addresses.
+   - `remove_block(1)` from an `OddTwo` block: verify carving works
+     and the remainder becomes `Min`.
 
-### Phase 5: Consolidation — reuse predecessor's Range entry (optimisation)
+**Test gate**: all existing tests pass + new `OddTwo`-specific tests pass.
+
+### Phase 6: Consolidation — reuse predecessor's Range entry (optimisation)
 
 Switch the P-merge case to reuse `P`'s Range tree node (no RB mutation),
 but **only when `P` is non-min** (a min-size `P` has no Range entry to
@@ -1118,7 +1032,7 @@ reuse). The S-only case continues to use remove+reinsert. The P+S case
 reuses `P` (when non-min) and removes `S`. When `P` is min-size, the
 merged block is inserted into the Range tree normally.
 
-**Test gate**: all Phase 4 tests still pass. Add debug-only counters at
+**Test gate**: all Phase 3+4 tests still pass. Add debug-only counters at
 the `BackendArena` layer (not inside `RBTree`) for "Range tree
 `insert_path` calls" and "Range tree `remove_path` calls" during
 `add_block` / `remove_block`. Assert that:
@@ -1133,14 +1047,14 @@ This avoids any modification to `RBTree` itself — the counter increments
 sit in the `BackendArena` wrappers around its Range-tree calls.
 
 **Review gate**: spec slice = "Consolidation: reusing tree entries when
-possible" and the Phase 5 section above. Reviewer checks: reuse path
+possible" and the Phase 6 section above. Reviewer checks: reuse path
 correctly leaves the Range-tree node in place (key unchanged, only the
 back-reference from the new combined block); min-P case correctly falls
 back to normal insert; counter assertions cover the cases that
 distinguish the optimised path from the simple path; no regression of
-Phase 4's full invariant + oracle randomised test.
+Phase 3+4's full invariant + oracle randomised test.
 
-### Phase 6: Multi-instance test
+### Phase 7: Multi-instance test
 
 Instantiate two `BackendArena<MockRep>` over disjoint address ranges in
 the same test process, drive workloads against both, verify each
@@ -1149,7 +1063,7 @@ invariant independently.
 **Test gate**: multi-instance test passes; total memory accounted for
 via both instances matches expectations.
 
-### Phase 7: Final review and self-review
+### Phase 8: Final review and self-review
 
 Per `claude.md` mandatory review checkpoints:
 
@@ -1215,13 +1129,15 @@ No production code path is changed in this phase: the existing
 - Predecessor-Range-entry-reuse only applies when `P` is non-min.
 - `add_block` returns `{0, 0}` on success; on overflow it returns the
   unabsorbed range, mirroring `Buddy::add_block`'s overflow-return
-  contract. Overflow arises either when `size_chunks >=
-  2^MAX_CHUNKS_BITS` on input (excess returned) or when consolidation
-  grows a coalesced block to exactly `2^MAX_CHUNKS_BITS` (the
-  consolidated range is returned, neighbours having been removed
-  first). The future `BackendArenaRange` wrapper is responsible for
-  handling overflow; the standalone `BackendArena` only exposes the
-  contract.
+  contract. Oversize inputs (`size_chunks >= 2^MAX_CHUNKS_BITS`) bypass
+  `BackendArena` entirely — the wrapping `BackendArenaRange` layer
+  handles them before calling `add_block`, and `add_block` asserts
+  `size_chunks < 2^MAX_CHUNKS_BITS`. The only overflow case is
+  consolidation growing a coalesced block to exactly
+  `2^MAX_CHUNKS_BITS` (the consolidated range is returned, neighbours
+  having been removed first). The future `BackendArenaRange` wrapper is
+  responsible for handling overflow; the standalone `BackendArena` only
+  exposes the contract.
 - `BackendArenaRep` is a chunk-keyed accessor concept (variant tag plus
   word/size accessors for entries 1–3). `BackendArena` builds two
   internal `RBTree`-Rep adapters (`BinRep`, `RangeRep`) over it; user
@@ -1241,19 +1157,16 @@ No production code path is changed in this phase: the existing
 
 ## Still open (resolve during implementation)
 
-- Exact bit positions in the first-word pagemap encoding for the
-  variant-tag field (Phase 3 decides; documented only in
-  `backend_arena.h`).
-- Whether Bin tree roots are stored flat (`Array<Root, TOTAL_BINS>`)
-  or exponent-keyed (`Array<Array<Root, BINS_PER_EXP>, NUM_EXPS>`).
-  Decide in Phase 3 when `BackendArena` is built; this is an internal
-  detail of `BackendArena` (bin id is a flat `size_t` returned by
-  `Bitmap::add` / `Bitmap::find_for_request`, so the choice does not
-  leak into `BackendArenaBins` or the Rep concept).
+- ~~Exact bit positions in the first-word pagemap encoding for the
+  variant-tag field.~~ **Resolved** (Phase 3+4): bits 9–10 encode
+  `BackendArenaVariant` (`VARIANT_MASK = 0x600`); bit 8 is `RED_BIT`;
+  bits 0–7 are `BACKEND_RESERVED_MASK`. Documented in
+  `backend_arena.h`.
+- ~~Whether Bin tree roots are stored flat
+  (`Array<Root, TOTAL_BINS>`) or exponent-keyed.~~ **Resolved**
+  (Phase 3+4): flat `stl::Array<BinTree, Bins::Bitmap::TOTAL_BINS>`.
 - Whether the future memcpy `offset` field is best placed in the second
   word of every pagemap entry, in dedicated entries, or in a side table.
   Out of scope for this phase; flagged for the memcpy-fix plan to design.
 - Whether `INTERMEDIATE_BITS=4` (34 bins/exp) needs to be tested in this
   phase. Currently `B ∈ {1, 2, 3}` only.
-
-
