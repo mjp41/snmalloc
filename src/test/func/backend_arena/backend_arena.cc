@@ -966,6 +966,253 @@ namespace snmalloc
       "  Randomised stress (%zu seeds x %zu ops): OK\n", NUM_SEEDS, NUM_OPS);
   }
 
+  // ==================================================================
+  // (I) Multi-instance: shared pagemap, blocks migrating between arenas
+  // ==================================================================
+
+  static void test_multi_instance_basic()
+  {
+    reset_mock_store();
+    Arena<8> arena_a;
+    Arena<8> arena_b;
+    constexpr size_t BASE = 256; // avoid address 0
+
+    // Add distinct blocks to each arena.
+    arena_a.add_block(chunk_addr(BASE + 10), 5);
+    arena_b.add_block(chunk_addr(BASE + 30), 5);
+    arena_a.check_invariant(true);
+    arena_b.check_invariant(true);
+
+    // Migrate a block from A to B.
+    auto [a_addr, a_size] = arena_a.remove_block(3);
+    SNMALLOC_ASSERT(a_addr != 0 && a_size != 0);
+    arena_a.check_invariant(true);
+
+    arena_b.add_block(a_addr, a_size);
+    arena_a.check_invariant(true);
+    arena_b.check_invariant(true);
+
+    // Migrate from B back to A.
+    auto [b_addr, b_size] = arena_b.remove_block(2);
+    SNMALLOC_ASSERT(b_addr != 0 && b_size != 0);
+    arena_b.check_invariant(true);
+
+    arena_a.add_block(b_addr, b_size);
+    arena_a.check_invariant(true);
+    arena_b.check_invariant(true);
+
+    printf("  Basic migration: OK\n");
+  }
+
+  static void test_multi_instance_consolidation()
+  {
+    reset_mock_store();
+    Arena<8> arena_a;
+    Arena<8> arena_b;
+    constexpr size_t BASE = 256;
+
+    // Arena B holds two blocks with a gap: [20..24) and [28..32).
+    arena_b.add_block(chunk_addr(BASE + 20), 4);
+    arena_b.add_block(chunk_addr(BASE + 28), 4);
+    arena_b.check_invariant(true);
+
+    // Arena A holds the gap: [24..28).
+    arena_a.add_block(chunk_addr(BASE + 24), 4);
+    arena_a.check_invariant(true);
+
+    // Migrate the gap from A to B → should consolidate into [20..32).
+    auto [addr, size] = arena_a.remove_block(4);
+    SNMALLOC_ASSERT(addr == chunk_addr(BASE + 24));
+    SNMALLOC_ASSERT(size == 4);
+    arena_a.check_invariant(true);
+
+    arena_b.add_block(addr, size);
+    arena_b.check_invariant(true);
+
+    // B should now serve a size-12 request from the consolidated block.
+    auto [r_addr, r_size] = arena_b.remove_block(12);
+    SNMALLOC_ASSERT(r_addr == chunk_addr(BASE + 20));
+    SNMALLOC_ASSERT(r_size == 12);
+    arena_b.check_invariant(true);
+
+    printf("  Consolidation after migration: OK\n");
+  }
+
+  template<size_t K>
+  static void test_multi_stress_seed(size_t seed, size_t num_ops)
+  {
+    reset_mock_store();
+    Arena<K> arena_a;
+    Arena<K> arena_b;
+
+    constexpr size_t ARENA_CHUNKS = bits::one_at_bit(K);
+    constexpr size_t BASE = ARENA_CHUNKS;
+    Oracle oracle_a(BASE);
+    Oracle oracle_b(BASE);
+
+    // 0 = not in any arena, 1 = in arena A, 2 = in arena B.
+    std::vector<uint8_t> owner(ARENA_CHUNKS, 0);
+
+    xoroshiro::p128r64 rng(seed);
+
+    for (size_t op = 0; op < num_ops; op++)
+    {
+      // 0,1 = add to A or B; 2,3 = remove from A or B; 4 = migrate.
+      size_t action = rng.next() % 5;
+
+      bool target_a = (action & 1) == 0;
+      auto& arena = target_a ? arena_a : arena_b;
+      auto& oracle = target_a ? oracle_a : oracle_b;
+      uint8_t my_id = target_a ? 1 : 2;
+
+      if (action <= 1)
+      {
+        // Add: find a contiguous unowned region to free into this arena.
+        size_t max_size = ARENA_CHUNKS / 4;
+        if (max_size < 1)
+          max_size = 1;
+        size_t size = (rng.next() % max_size) + 1;
+        size_t start = rng.next() % ARENA_CHUNKS;
+
+        bool found = false;
+        for (size_t s = start; s < ARENA_CHUNKS; s++)
+        {
+          size_t actual = 0;
+          for (size_t j = s; j < ARENA_CHUNKS && j < s + size; j++)
+          {
+            if (owner[j] != 0)
+              break;
+            actual++;
+          }
+          if (actual >= 1)
+          {
+            size = actual;
+            start = s;
+            found = true;
+            break;
+          }
+        }
+        if (!found)
+          continue;
+
+        if (size >= ARENA_CHUNKS)
+          size = ARENA_CHUNKS - 1;
+        if (start + size > ARENA_CHUNKS)
+          size = ARENA_CHUNKS - start;
+        if (size == 0)
+          continue;
+
+        for (size_t j = start; j < start + size; j++)
+          owner[j] = my_id;
+
+        auto result = arena.add_block(chunk_addr(BASE + start), size);
+        oracle.add(start, size);
+
+        if (result.first != 0)
+        {
+          for (size_t j = 0; j < ARENA_CHUNKS; j++)
+            if (owner[j] == my_id)
+              owner[j] = 0;
+          oracle = Oracle(BASE);
+        }
+
+        arena.check_invariant(true);
+      }
+      else if (action <= 3)
+      {
+        // Remove from this arena.
+        size_t max_req = ARENA_CHUNKS / 4;
+        if (max_req < 1)
+          max_req = 1;
+        size_t n = (rng.next() % max_req) + 1;
+
+        auto arena_r = arena.remove_block(n);
+        auto oracle_r = oracle.remove(n);
+
+        if (oracle_r.second == 0)
+        {
+          SNMALLOC_ASSERT(arena_r.second == 0);
+        }
+        else
+        {
+          SNMALLOC_ASSERT(arena_r.second != 0);
+          SNMALLOC_ASSERT(arena_r.first == chunk_addr(BASE + oracle_r.first));
+          SNMALLOC_ASSERT(arena_r.second == oracle_r.second);
+
+          for (size_t j = oracle_r.first; j < oracle_r.first + oracle_r.second;
+               j++)
+          {
+            SNMALLOC_ASSERT(owner[j] == my_id);
+            owner[j] = 0;
+          }
+        }
+
+        arena.check_invariant(true);
+      }
+      else
+      {
+        // Migrate: remove from one arena, add to the other.
+        bool from_a = (rng.next() & 1) == 0;
+        auto& src = from_a ? arena_a : arena_b;
+        auto& src_oracle = from_a ? oracle_a : oracle_b;
+        auto& dst = from_a ? arena_b : arena_a;
+        auto& dst_oracle = from_a ? oracle_b : oracle_a;
+        uint8_t src_id = from_a ? 1 : 2;
+        uint8_t dst_id = from_a ? 2 : 1;
+
+        size_t n = (rng.next() % 3) + 1;
+        auto src_r = src.remove_block(n);
+        auto src_or = src_oracle.remove(n);
+
+        if (src_or.second == 0)
+        {
+          SNMALLOC_ASSERT(src_r.second == 0);
+        }
+        else
+        {
+          SNMALLOC_ASSERT(src_r.second != 0);
+          SNMALLOC_ASSERT(src_r.first == chunk_addr(BASE + src_or.first));
+          SNMALLOC_ASSERT(src_r.second == src_or.second);
+
+          for (size_t j = src_or.first; j < src_or.first + src_or.second; j++)
+          {
+            SNMALLOC_ASSERT(owner[j] == src_id);
+            owner[j] = dst_id;
+          }
+
+          auto dst_r = dst.add_block(src_r.first, src_r.second);
+          dst_oracle.add(src_or.first, src_or.second);
+
+          if (dst_r.first != 0)
+          {
+            for (size_t j = 0; j < ARENA_CHUNKS; j++)
+              if (owner[j] == dst_id)
+                owner[j] = 0;
+            dst_oracle = Oracle(BASE);
+          }
+        }
+
+        src.check_invariant(true);
+        dst.check_invariant(true);
+      }
+    }
+  }
+
+  static void test_multi_stress()
+  {
+    constexpr size_t K = 6; // 64-chunk arena
+    constexpr size_t NUM_OPS = 500;
+    constexpr size_t NUM_SEEDS = 50;
+
+    for (size_t seed = 1; seed <= NUM_SEEDS; seed++)
+      test_multi_stress_seed<K>(seed, NUM_OPS);
+
+    printf(
+      "  Multi-instance stress (%zu seeds x %zu ops): OK\n",
+      NUM_SEEDS,
+      NUM_OPS);
+  }
+
 } // namespace snmalloc
 
 int main()
@@ -1015,6 +1262,11 @@ int main()
 
   printf("(H) Randomised stress:\n");
   snmalloc::test_stress();
+
+  printf("(I) Multi-instance:\n");
+  snmalloc::test_multi_instance_basic();
+  snmalloc::test_multi_instance_consolidation();
+  snmalloc::test_multi_stress();
 
   printf("All BackendArena tests passed.\n");
   return 0;

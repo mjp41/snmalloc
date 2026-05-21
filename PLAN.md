@@ -1026,33 +1026,10 @@ All changes are in `backend_arena.h` and the test file.
 
 ### Phase 6: Consolidation — reuse predecessor's Range entry (optimisation)
 
-Switch the P-merge case to reuse `P`'s Range tree node (no RB mutation),
-but **only when `P` is non-min** (a min-size `P` has no Range entry to
-reuse). The S-only case continues to use remove+reinsert. The P+S case
-reuses `P` (when non-min) and removes `S`. When `P` is min-size, the
-merged block is inserted into the Range tree normally.
-
-**Test gate**: all Phase 3+4 tests still pass. Add debug-only counters at
-the `BackendArena` layer (not inside `RBTree`) for "Range tree
-`insert_path` calls" and "Range tree `remove_path` calls" during
-`add_block` / `remove_block`. Assert that:
-
-- the non-min-P-only consolidation case records zero
-  Range-tree insert/remove calls (the existing node is reused in place),
-- the min-P-only consolidation case records exactly one Range-tree insert
-  (no remove),
-- the S-only consolidation case records one insert and one remove.
-
-This avoids any modification to `RBTree` itself — the counter increments
-sit in the `BackendArena` wrappers around its Range-tree calls.
-
-**Review gate**: spec slice = "Consolidation: reusing tree entries when
-possible" and the Phase 6 section above. Reviewer checks: reuse path
-correctly leaves the Range-tree node in place (key unchanged, only the
-back-reference from the new combined block); min-P case correctly falls
-back to normal insert; counter assertions cover the cases that
-distinguish the optimised path from the simple path; no regression of
-Phase 3+4's full invariant + oracle randomised test.
+**Deferred.** Self-contained optimisation that saves two RB-tree operations
+per predecessor consolidation. Can be added later if profiling shows it
+matters. The design is recorded in the "Consolidation: reusing tree
+entries when possible" section above.
 
 ### Phase 7: Multi-instance test
 
