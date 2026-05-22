@@ -1050,7 +1050,523 @@ Per `claude.md` mandatory review checkpoints:
 
 **Test gate**: full ctest run (Debug) passes; reviewer reports no issues.
 
-## Files added / changed (anticipated)
+---
+
+# Implementation plan: BackendArenaRange phase
+
+## Scope
+
+Build `BackendArenaRange` — a Range pipeline component that wraps
+`BackendArena` behind snmalloc's Range API, suitable for replacing
+`LargeBuddyRange`. This plan covers:
+
+- Generalising BackendArena's Rep interface for pagemap compatibility.
+- `PagemapRep` — adapting pagemap entries to BackendArena's Rep concept.
+- `BackendArenaRange` — the Range wrapper with refill and overflow handling.
+- Boundary-bit support for safe consolidation across PAL allocations.
+- Unit tests for all of the above.
+
+The pipeline integration (replacing `LargeBuddyRange` in `standard_range.h`
+and `meta_protected_range.h`) is a separate step ("Update backend to use
+BackendArenaRange") that follows once this plan is complete.
+
+## Design
+
+### Rep generalisation: representation-agnostic data structure
+
+`BackendArena` must be representation-agnostic, mirroring how
+`Buddy<>` is generic over its node `Rep` (see `buddy.h`). The
+existing buddy ecosystem demonstrates the layering:
+
+- `buddy.h` — pure data structure, no representation.
+- `largebuddyrange.h` defines `BuddyChunkRep` — a pagemap-backed Rep
+  (red bit at bit 8, layout chosen to coexist with the pagemap's
+  reserved low bits).
+- `smallbuddyrange.h` defines `BuddyInplaceRep` — an inline Rep that
+  stores tree pointers in the free chunk itself (red bit at bit 0).
+
+`BackendArena` must support the same two representation paths so it
+can eventually replace both `LargeBuddyRange` (pagemap) and
+`SmallBuddyRange` (inline) in the standard pipeline.
+
+#### Rep concept
+
+`Rep` provides:
+
+- `using BinRep`  — full RBTree Rep for the bin trees.
+- `using RangeRep` — full RBTree Rep for the range tree.
+- `get_variant(addr)` / `set_variant(addr, v)` — block variant tag.
+- `get_large_size_chunks(addr)` / `set_large_size_chunks(addr, n)` —
+  precise chunk count for `Large` blocks.
+- `can_consolidate(higher_addr)` — false at PAL allocation boundaries.
+
+Each inner `BinRep` / `RangeRep` is a complete RBTree Rep (same shape
+as `BuddyChunkRep` / `BuddyInplaceRep`): provides `Handle`,
+`Contents`, `null`, `root`, `ref`, `get`, `set`, `is_red`, `set_red`,
+`compare`, `equal`, `printable`, `name`. **All bit-packing decisions
+(red bit position, mask layout) are private to the Rep** —
+`BackendArena` carries no `RED_BIT` / `VARIANT_MASK` / `META_MASK`
+constants of its own.
+
+`BackendArena` instantiates `RBTree<typename Rep::BinRep>` and
+`RBTree<typename Rep::RangeRep>` directly. It never inspects the bit
+layout used by the Rep.
+
+#### PagemapRep (production)
+
+Lives in `backend_arena_range.h`. Privately owns its bit layout:
+
+- Bin tree node in pagemap entry at `addr`, Word::One/Two. `BinRep`
+  packs the red bit at bit 8 and the variant tag at bits 9–10 of
+  Word::One; bits 0–7 are reserved by the pagemap.
+- Range tree node in pagemap entry at `addr + MIN_CHUNK_SIZE`, with
+  the same layout for `RangeRep`.
+- Large-size chunk count stored as `count << 8` in Word::One of the
+  entry at `addr + 2*MIN_CHUNK_SIZE`.
+
+#### MockRep (test only)
+
+Lives in `src/test/func/backend_arena/backend_arena.cc`. Backs its
+storage with an array of `mock_entry` and uses the same `RED_BIT =
+1 << 8` layout (so it exercises the same code paths the pagemap Rep
+will). The mock's `BinRep` and `RangeRep` are inner structs that own
+their own ref/get/set/is_red/set_red implementations.
+
+#### Future inline Rep (not in this phase)
+
+Mirroring `BuddyInplaceRep`: tree pointers live inside the free
+memory itself. `BinRep` / `RangeRep` would use pointer-low-bits for
+red and variant tags. This is what enables a future
+`BackendArena`-based replacement for `SmallBuddyRange`.
+
+### Boundary-bit consolidation check
+
+On platforms where `CONSOLIDATE_PAL_ALLOCS` is false (CHERI, Windows),
+the pagemap sets a boundary bit on the first chunk of each PAL allocation
+to prevent consolidation across allocation boundaries
+(`BuddyChunkRep::can_consolidate` checks this).
+
+BackendArena's `add_block` consolidation must respect the same contract.
+A new method on the Rep concept:
+
+```
+static bool can_consolidate(uintptr_t higher_addr);
+```
+
+Returns `true` if the block at `higher_addr` may be consolidated with the
+block immediately below it. `add_block` checks this before each merge:
+
+- P ↔ A merge: `Rep::can_consolidate(addr)` (A is the higher address).
+- A ↔ S merge: `Rep::can_consolidate(succ_addr)` (S is the higher address).
+
+MockRep: always returns `true` (no boundaries).
+PagemapRep: returns `!get_metaentry_mut(higher_addr).is_boundary()`.
+
+### PagemapRep
+
+Templated on `Pagemap` and `MAX_CHUNKS_BITS`. The second parameter is
+needed for the large-size-shift static assertion:
+
+```
+template<SNMALLOC_CONCEPT(IsWritablePagemap) Pagemap, size_t MAX_CHUNKS_BITS>
+struct PagemapRep { ... };
+```
+
+Each free block uses pagemap entries at three offsets from its base
+address:
+
+- **Chunk 0** (`addr`): Word::One / Word::Two → bin-tree node.
+  Bits 9–10 of Word::One → variant tag. Bit 8 → RED_BIT. All coexist
+  because `TreeRep::set` preserves `META_MASK` on writes.
+- **Chunk 1** (`addr + MIN_CHUNK_SIZE`): Word::One / Word::Two →
+  range-tree node (only for blocks ≥ 2 chunks).
+- **Chunk 2** (`addr + 2 * MIN_CHUNK_SIZE`): Word::One → large chunk
+  count (only for blocks ≥ 3 chunks). Stored as `count << 8` to avoid
+  the 8 reserved low bits; recovered via `word.get() >> 8`.
+
+**Static assertions in PagemapRep** (catch configuration errors early):
+
+- `static_assert((VARIANT_MASK | RED_BIT) < MIN_CHUNK_SIZE)` — metadata
+  bits don't collide with address bits.
+- `static_assert(MetaEntryBase::is_backend_allowed_value(Word::One,
+  VARIANT_MASK | RED_BIT))` — all metadata bits are in the backend-
+  allowed range.
+- `static_assert(MAX_CHUNKS_BITS + 8 <= bits::BITS)` — shifted large
+  size fits in a pagemap word.
+
+Method mapping:
+
+| Method | Implementation |
+|--------|---------------|
+| `ref_word(dir, addr)` | `get_metaentry_mut(addr).get_backend_word(dir ? One : Two)` |
+| `ref_range_word(dir, addr)` | `get_metaentry_mut(addr + MCS).get_backend_word(dir ? One : Two)` |
+| `get_variant(addr)` | `(ref_word(true, addr).get() & VARIANT_MASK) >> 9` |
+| `set_variant(addr, v)` | RMW on `ref_word(true, addr)`: clear VARIANT_MASK, OR new value |
+| `get_large_size_chunks(addr)` | `get_metaentry_mut(addr + 2*MCS).get_backend_word(One).get() >> 8` |
+| `set_large_size_chunks(addr, s)` | `...get_backend_word(One) = s << 8` |
+| `can_consolidate(addr)` | `!get_metaentry_mut(addr).is_boundary()` |
+
+(`MCS = MIN_CHUNK_SIZE`)
+
+`get_backend_word` auto-calls `claim_for_backend()` on first access to
+an unowned entry, so pagemap ownership transitions happen implicitly.
+The boundary bit (bit 0 of `meta`) is in the reserved-mask zone and is
+preserved by both `claim_for_backend()` and `BackendStateWordRef::operator=`.
+
+### BackendArenaRange
+
+Outer template matches `LargeBuddyRange`'s shape so it is a drop-in
+replacement in `Pipe<...>` compositions:
+
+```
+template<
+  size_t REFILL_SIZE_BITS,
+  size_t MAX_SIZE_BITS,
+  SNMALLOC_CONCEPT(IsWritablePagemap) Pagemap,
+  size_t MIN_REFILL_SIZE_BITS = 0>
+class BackendArenaRange
+{
+public:
+  template<typename ParentRange = EmptyRange<>>
+  class Type : public ContainsParent<ParentRange>
+  {
+    using ContainsParent<ParentRange>::parent;
+
+    static constexpr size_t MAX_CHUNKS_BITS = MAX_SIZE_BITS - MIN_CHUNK_BITS;
+    using PagemapRepT = PagemapRep<Pagemap, MAX_CHUNKS_BITS>;
+    BackendArena<PagemapRepT, 0, MAX_CHUNKS_BITS> arena;
+    size_t requested_total = 0;
+
+  public:
+    static constexpr bool Aligned = true;
+    static constexpr bool ConcurrencySafe = false;
+    using ChunkBounds = capptr::bounds::Arena;
+
+    capptr::Arena<void> alloc_range(size_t size);
+    void dealloc_range(capptr::Arena<void> base, size_t size);
+  };
+};
+```
+
+**`alloc_range(size)`**:
+
+1. `SNMALLOC_ASSERT(size >= MIN_CHUNK_SIZE)`.
+2. `SNMALLOC_ASSERT(bits::is_pow2(size))` — same assertion as
+   `LargeBuddyRange`. Non-power-of-two support is deferred to
+   "Update front-end" step.
+3. `n_chunks = size >> MIN_CHUNK_BITS`.
+4. Oversize bypass: if `n_chunks >= bits::one_at_bit(MAX_CHUNKS_BITS)`,
+   delegate to `parent.alloc_range(size)` (if `ParentRange::Aligned`),
+   else return `nullptr`. Same as `LargeBuddyRange`.
+5. `auto [addr, actual] = arena.remove_block(n_chunks)`.
+   (`actual == n_chunks` for power-of-two requests — the `is_pow2`
+   assertion above guarantees this for this phase.)
+6. If `addr != 0`, return
+   `capptr::Arena<void>::unsafe_from(reinterpret_cast<void*>(addr))`.
+7. If `addr == 0`, call `refill(size)`.
+
+**`dealloc_range(base, size)`**:
+
+1. `addr = base.unsafe_uintptr()`, `n_chunks = size >> MIN_CHUNK_BITS`.
+2. Oversize bypass: if `n_chunks >= bits::one_at_bit(MAX_CHUNKS_BITS)`,
+   delegate to `parent.dealloc_range(base, size)`. Same condition and
+   SFINAE guard as `LargeBuddyRange::parent_dealloc_range`.
+3. `auto [ov_addr, ov_size] = arena.add_block(addr, n_chunks)`.
+4. If overflow (`ov_addr != 0`): call `dealloc_overflow(ov_addr,
+   ov_size)`.
+
+**`dealloc_overflow(addr, size_chunks)`** — matches
+`LargeBuddyRange::dealloc_overflow` pattern:
+
+Overflow from `add_block` can produce non-power-of-two sizes (e.g.,
+consolidated blocks that span multiple non-aligned PAL allocations).
+The parent may require power-of-two aligned inputs. So overflow is
+decomposed using `range_to_pow_2_blocks<MIN_CHUNK_BITS>`:
+
+```
+void dealloc_overflow(uintptr_t addr, size_t size_chunks)
+{
+  auto base = capptr::Arena<void>::unsafe_from(
+    reinterpret_cast<void*>(addr));
+  size_t size_bytes = size_chunks << MIN_CHUNK_BITS;
+  if constexpr (MAX_SIZE_BITS != (bits::BITS - 1))
+  {
+    range_to_pow_2_blocks<MIN_CHUNK_BITS>(
+      base, size_bytes,
+      [this](capptr::Arena<void> b, size_t s, bool) {
+        parent.dealloc_range(b, s);
+      });
+  }
+  else
+  {
+    // Global range: no parent to return to.
+    SNMALLOC_CHECK(false && "Global range overflow should not happen");
+  }
+}
+```
+
+When `MAX_SIZE_BITS == BITS - 1` (global range), the arena covers the
+entire address space. Overflow would mean all managed memory has
+coalesced — this should not happen in normal operation. If it does,
+abort (matching `LargeBuddyRange`'s behaviour for the unreachable
+case).
+
+**`refill(size)`** — closely follows `LargeBuddyRange::refill`:
+
+For `ParentRange::Aligned` (the standard path):
+
+1. Compute `refill_size = min(REFILL_SIZE, requested_total)`, clamped to
+   `max(MIN_REFILL_SIZE, size)`, rounded up to next power of two.
+2. `auto refill_range = parent.alloc_range(refill_size)`.
+3. If `refill_range != nullptr`:
+   - `requested_total += refill_size`.
+   - `remainder_size = refill_size - size`.
+   - If `remainder_size > 0`:
+     `arena.add_block(refill_range.unsafe_uintptr() + size,
+                      remainder_size >> MIN_CHUNK_BITS)`.
+     Handle overflow (send to parent).
+   - Return `refill_range`.
+4. If `nullptr`, return `nullptr`.
+
+The returned portion (`refill_range` to `refill_range + size`) bypasses
+the arena entirely — it is not inserted or tracked. The remainder is
+added to the arena for future allocations. Since the remainder comes
+from a fresh refill and has no neighbours in the arena, `add_block`
+performs a simple insertion with no consolidation (boundary bit on the
+refill base may prevent consolidation with any pre-existing blocks
+below it, which is correct).
+
+For the unaligned parent path: over-allocate `2 * size` (with overflow
+check), add everything to the arena via `add_range` (which decomposes
+into power-of-two blocks using `range_to_pow_2_blocks`), then call
+`alloc_range(size)` recursively. Same logic as `LargeBuddyRange`.
+
+Safety guards (both from `LargeBuddyRange`):
+- `static_assert((REFILL_SIZE < bits::one_at_bit(MAX_SIZE_BITS)) ||
+  ParentRange::Aligned)` — prevents the unaligned path from adding a
+  block that violates `add_block`'s `size_chunks < 2^MAX_CHUNKS_BITS`
+  precondition.
+- Runtime: `SNMALLOC_ASSERT(refill_size < bits::one_at_bit(MAX_SIZE_BITS))`
+  — catches the computed `refill_size` (which may be larger than
+  `REFILL_SIZE` when `needed_size = 2 * size` dominates).
+
+### Static properties
+
+- `Aligned = true`: BackendArena's carving ensures that a request of
+  size `n` (power-of-two, chunk-aligned) is placed at an `n`-aligned
+  address within the source block. For non-power-of-two requests
+  (future: step 4), the bin scheme's alignment rules still hold.
+- `ConcurrencySafe = false`: same as `LargeBuddyRange`.
+- `ChunkBounds = capptr::bounds::Arena`: same as `LargeBuddyRange`.
+
+### MAX_SIZE_BITS = BITS - 1 (global range)
+
+The global `LargeBuddyRange` uses `MAX_SIZE_BITS = BITS - 1`, meaning
+the buddy can hold up to half the address space. For BackendArenaRange:
+`MAX_CHUNKS_BITS = (BITS - 1) - MIN_CHUNK_BITS`. On 64-bit with
+`MIN_CHUNK_BITS = 14`, this is 49 — the arena can hold up to 2^49
+chunks. The arena's overflow path returns consolidated blocks that
+reach this size, handled by `dealloc_overflow` (see above).
+
+The `large_size_chunks` field (stored shifted by 8 in a pagemap word)
+needs at most 49 bits, which fits in the 56 backend-usable bits of a
+64-bit pagemap word. A `static_assert(MAX_CHUNKS_BITS + 8 <= BITS)`
+in `PagemapRep` catches configurations where this would overflow.
+
+## Phases
+
+### Phase 9: Rep generalisation + boundary support
+
+**Status**: implemented; staged (not committed); awaiting review.
+
+Changes to `backend_arena.h`:
+
+1. Delete the private `WordRef` nested struct, the `TreeRep`
+   template, and all bit-layout constants
+   (`RED_BIT`/`VARIANT_MASK`/`META_MASK` and `BACKEND_RESERVED_MASK`).
+   `BackendArena` is now representation-agnostic, mirroring how
+   `buddy.h` is generic over its node `Rep`.
+2. Replace the internal `using BinRep = TreeRep<Rep::ref_word>` /
+   `RangeRep = TreeRep<Rep::ref_range_word>` aliases with direct use
+   of `typename Rep::BinRep` and `typename Rep::RangeRep` — full
+   RBTree Reps supplied by the user, owning their own bit packing.
+3. Update the Rep concept doc to require `BinRep`, `RangeRep`,
+   `get_variant`/`set_variant`,
+   `get_large_size_chunks`/`set_large_size_chunks`, and
+   `can_consolidate`.
+4. Add `can_consolidate` calls in `add_block` before each merge
+   (predecessor and successor) and update the invariant clauses to
+   tolerate boundary-blocked adjacency.
+
+Changes to `backend_arena.cc` (test file):
+
+5. Define `BackendArenaWordRef` (test-only proxy) at the top of the
+   test file.
+6. MockRep grows inner `BinRep` and `RangeRep` structs that each
+   provide the full RBTree Rep interface (ref/get/set/is_red/etc.)
+   over the mock-entry array. Each owns its own private bit layout
+   (red bit at bit 8 to match production layout).
+7. MockRep keeps top-level `get_variant`/`set_variant`/large-size
+   accessors and adds `can_consolidate(uintptr_t) → true`.
+8. New test: verify that a MockRep variant with `can_consolidate`
+   returning false at a specific address prevents consolidation across
+   that boundary. Test both predecessor and successor merges being
+   independently blocked.
+
+**Test gate**: all existing BackendArena tests pass unchanged; new
+boundary test passes.
+
+### Phase 10: PagemapRep + BackendArenaRange + tests
+
+New file: `src/snmalloc/backend_helpers/backend_arena_range.h`
+
+1. `PagemapRep<Pagemap>` — full Rep implementation using pagemap entries
+   as described above, with all static assertions.
+2. `BackendArenaRange<REFILL_SIZE_BITS, MAX_SIZE_BITS, Pagemap,
+   MIN_REFILL_SIZE_BITS>` — the Range wrapper with `alloc_range`,
+   `dealloc_range`, `refill`, and `dealloc_overflow`.
+
+Modified: `src/snmalloc/backend_helpers/backend_helpers.h`
+
+3. Add `#include "backend_arena_range.h"` so the new header is
+   available through the standard include path.
+
+New file: `src/test/func/backend_arena_range/backend_arena_range.cc`
+
+4. Test with snmalloc's `BasicPagemap` (or a test-appropriate pagemap):
+   - PagemapRep word round-trips (variant, tree words, large size).
+   - BackendArenaRange `alloc_range` / `dealloc_range` smoke test with
+     a simple parent range.
+   - Refill: verify that allocating when the arena is empty triggers a
+     parent refill and returns memory.
+   - Overflow: verify that deallocating a block that triggers arena-scale
+     consolidation passes the decomposed overflow to the parent via
+     `range_to_pow_2_blocks`.
+   - Overflow with non-power-of-two consolidated size: verify
+     decomposition produces valid power-of-two blocks.
+   - Boundary: verify that a boundary bit in the pagemap prevents
+     consolidation of adjacent blocks from different refills (when
+     `CONSOLIDATE_PAL_ALLOCS` is false).
+   - Test at largest configured `MAX_SIZE_BITS` values, especially
+     `MAX_SIZE_BITS == bits::BITS - 1` if feasible.
+
+Modified: `CMakeLists.txt`
+
+5. Register `backend_arena_range` in `TESTLIB_ONLY_TESTS`.
+
+**Test gate**: BackendArenaRange tests pass; existing tests unaffected.
+
+### Phase 11: Final review
+
+Per `claude.md` mandatory review checkpoints:
+
+- Spawn a fresh-context reviewer on the full diff (Phases 9–10).
+- Address findings, loop until clean.
+
+**Test gate**: full ctest run passes; reviewer reports no issues.
+
+*Pipeline integration (replacing `LargeBuddyRange` in `standard_range.h`
+and `meta_protected_range.h`) is a separate follow-up plan: "Update
+backend to use BackendArenaRange."*
+
+## Files added / changed (anticipated, this phase)
+
+- Modified: `src/snmalloc/backend_helpers/backend_arena.h` —
+  representation-agnostic: delete private `WordRef`, `TreeRep`, and
+  all bit-layout constants (`RED_BIT`/`VARIANT_MASK`/`META_MASK`/
+  reserved); use `Rep::BinRep` and `Rep::RangeRep` directly;
+  `can_consolidate` check in `add_block`; invariant clauses updated.
+- New: `src/snmalloc/backend_helpers/backend_arena_range.h` —
+  `PagemapRep` + `BackendArenaRange`.
+- Modified: `src/snmalloc/backend_helpers/backend_helpers.h` — include
+  `backend_arena_range.h`.
+- Modified: `src/test/func/backend_arena/backend_arena.cc` — define
+  `BackendArenaWordRef` test helper at top of file; MockRep updated
+  (`BackendArenaWordRef` returns, `can_consolidate`); boundary tests.
+- New: `src/test/func/backend_arena_range/backend_arena_range.cc` —
+  Range wrapper tests.
+- Modified: `CMakeLists.txt` — register `backend_arena_range` test.
+
+## Key design decisions
+
+1. **Representation-agnostic data structure** — `BackendArena`
+   carries no bit-layout constants. All red/variant packing decisions
+   live in the user-supplied `Rep::BinRep` / `Rep::RangeRep`, matching
+   how `BuddyChunkRep` and `BuddyInplaceRep` each own their own
+   layouts. This is what makes a future inline Rep (to replace
+   `SmallBuddyRange`) possible.
+
+2. **PagemapRep variant in bin-tree Word::One** — PagemapRep packs
+   the variant tag at bits 9–10 of Word::One alongside the red bit
+   (bit 8) and child pointer (bits ≥ MIN_CHUNK_BITS). These are
+   private constants inside PagemapRep, not exposed by BackendArena.
+
+3. **Large size stored shifted** — PagemapRep stores the chunk count
+   as `count << 8` to avoid the pagemap's reserved low byte; recovered
+   via `>> 8`. Guarded by `static_assert(MAX_CHUNKS_BITS + 8 <= bits::BITS)`.
+
+4. **Boundary checks in BackendArena** — not in BackendArenaRange.
+   Consolidation decisions happen inside `add_block`, so the boundary
+   check must be there. The Rep concept cleanly abstracts this via
+   `can_consolidate`.
+
+5. **Refill returns prefix directly** — like LargeBuddyRange, the
+   first `size` bytes of a refill bypass the arena. Only the remainder
+   enters the arena. This avoids unnecessary tree operations on the
+   hot path.
+
+6. **PagemapRep auto-claims entries** — `get_backend_word` calls
+   `claim_for_backend()` on first access. No explicit ownership
+   management needed in BackendArena or BackendArenaRange.
+
+7. **Overflow decomposition** — `add_block` overflow may produce non-
+   power-of-two sizes (consolidated blocks from multiple PAL allocs).
+   `dealloc_overflow` uses `range_to_pow_2_blocks` to decompose before
+   passing to parent, matching the existing pattern in
+   `LargeBuddyRange::add_range`.
+
+8. **`BackendArenaWordRef` lives in the test file** — production
+   `PagemapRep` returns `BackendStateWordRef` directly (mirroring
+   `BuddyChunkRep` in `largebuddyrange.h`). The test-only
+   `BackendArenaWordRef` proxy is defined in
+   `src/test/func/backend_arena/backend_arena.cc` and used only by
+   MockRep, so production headers carry no test scaffolding.
+
+9. **Power-of-two assertion retained** — `alloc_range` keeps
+   `is_pow2(size)` for this phase. Non-power-of-two support is
+   deferred to "Update front-end" step, when the bin scheme's
+   alignment guarantees are verified end-to-end.
+
+## Resolved during plan review
+
+- Overflow handling: `add_block` can return non-power-of-two sizes when
+  blocks from multiple PAL allocations consolidate. `dealloc_overflow`
+  decomposes via `range_to_pow_2_blocks`. (Rubber-duck finding #2.)
+- Handle visibility / layering: original plan promoted bit-layout
+  constants and a `BackendArenaWordRef` proxy to namespace scope so
+  production and test code could share them. Subsequent review
+  observed that this broke the Buddy/`BuddyChunkRep`/`BuddyInplaceRep`
+  layering: the data structure should be representation-agnostic.
+  Resolved by making `BackendArena` carry no bit-layout state and
+  requiring `Rep::BinRep` / `Rep::RangeRep` to own all packing
+  decisions. Production `PagemapRep` keeps its layout private; the
+  test `BackendArenaWordRef` lives in the test file alongside MockRep.
+  (Rubber-duck finding #1, then revised after layering review.)
+- Size shift overflow: `static_assert(MAX_CHUNKS_BITS + 8 <= BITS)` in
+  `PagemapRep` prevents shift overflow. (Rubber-duck finding #4.)
+- Unaligned refill guard: both static assert AND runtime assert copied
+  from `LargeBuddyRange` to prevent `add_block` precondition violation.
+  (Rubber-duck finding #6, strengthened in second review.)
+- Pipeline integration (Phase 11) removed from this plan's scope —
+  separate follow-up plan. (Rubber-duck finding #8.)
+- `PagemapRep` templated on `MAX_CHUNKS_BITS` so the size-shift
+  static_assert is in scope. (Second review finding #1.)
+- `remove_block` exact-size guarantee is scoped to power-of-two
+  requests only. (Second review finding #4.)
+
+---
+
+## Files added / changed (BackendArena phase, completed)
 
 - New: `src/snmalloc/backend_helpers/backend_arena_bins.h` —
   `range_t`, `carve_t`, `carve`, `max_supported_chunks`, and nested
