@@ -113,7 +113,9 @@ as a collaborator.
 
 - **Comments earn their length by carrying correctness-relevant information** - A comment exists to convey something the reader cannot recover from the code — a non-obvious invariant, a subtle correctness argument, a coupling that breaks if edited. If you cannot name what the comment teaches that the code does not, cut it.
 
-- **Test scaffolding does not live in production headers** - A header that needs a friend struct purely for testing carries only the forward declaration and the friend grant; the body lives in test code.
+- **Don't qualify `src/snmalloc/` code as "production"** - Everything under `src/snmalloc/` is the shipped library; calling it "production code" / "production header" / "production Rep" adds no information and implicitly suggests there's non-production code in the same tree. Use unqualified names (e.g. "the in-tree header", "the shipped `PagemapRep`", or just the name itself). The meaningful distinction is in-tree (`src/snmalloc/`) vs test (`src/test/`), and that distinction is already clear from the path. This applies equally to comments inside `src/snmalloc/`, to comments inside `src/test/` referring back to in-tree code, and to design documents like `PLAN.md`.
+
+- **Test scaffolding does not live in `src/snmalloc/` headers** - A header that needs a friend struct purely for testing carries only the forward declaration and the friend grant; the body lives in test code.
 
 - **Store data in the form the consumer uses** - If a derived value is only consumed pre-shifted, pre-negated, or pre-masked, store it that way at build time. The cost moves from every consumer call to one build-time loop.
 

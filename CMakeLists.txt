@@ -550,6 +550,7 @@ if(NOT SNMALLOC_HEADER_ONLY_LIBRARY)
   set(TESTLIB_ONLY_TESTS
     backend_arena
     backend_arena_bins
+    backend_arena_range
     bits first_operation memory memory_usage multi_atexit multi_threadatexit
     redblack statistics teardown
     contention external_pointer large_alloc lotsofthreads post_teardown

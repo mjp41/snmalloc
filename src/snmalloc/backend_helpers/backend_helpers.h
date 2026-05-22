@@ -2,6 +2,7 @@
 
 #include "../mem/mem.h"
 #include "authmap.h"
+#include "backend_arena_range.h"
 #include "buddy.h"
 #include "commitrange.h"
 #include "commonconfig.h"
