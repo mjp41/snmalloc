@@ -18,6 +18,23 @@ root so that context survives session boundaries. Update (not append to) the
 file when the plan evolves. This is the single source of truth for what is
 planned and what has been completed.
 
+**Never commit without explicit approval**: Do not run `git commit`,
+`git commit --amend`, `git push`, `git reset`, `git rebase`, or any other
+history-mutating command until the user has explicitly approved the commit
+for the current change. "I'm happy with this phase now, please commit"
+counts as approval for that single commit; "begin the next phase" does not
+authorise committing later work. When you believe a change is ready to
+commit:
+  1. Show the user `git status` and `git diff --stat` (and the proposed
+     commit message) so they can see exactly what would be committed.
+  2. Ask for explicit approval — use the `ask_user` tool, do not infer
+     consent from earlier messages.
+  3. Only after the user has approved THIS commit, run `git commit`.
+If you have already committed without approval, offer to `git reset --soft
+HEAD~1` to undo it while keeping the changes staged. The same rule applies
+to opening pull requests: never run `gh pr create` (or equivalent) without
+explicit approval for that PR.
+
 **Baseline the checkout before starting work**: Before beginning implementation
 of any plan, verify that the current checkout builds and passes tests. Run the
 build and test suite (per `skills/building_and_testing.md`) and record the
