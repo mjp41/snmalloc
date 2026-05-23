@@ -1439,7 +1439,16 @@ boundary test passes.
 
 ### Phase 10: PagemapRep + BackendArenaRange + tests
 
-**Status**: implemented and tested.
+**Status**: implemented and tested. Committed in `9c1ca745`.
+
+> **Note**: the design notes below were written before Phase 10d
+> (bytes-throughout). The as-built code uses byte sizes everywhere
+> at the arena/range API and a unified `parent_dealloc(uintptr_t,
+> size_t)` helper in place of the old `dealloc_overflow` /
+> `parent_dealloc_range` pair. See the Phase 10d section for the
+> current shape. Where the notes below say `size_chunks`, the
+> implementation uses bytes; where they say `dealloc_overflow`, the
+> implementation uses `parent_dealloc`.
 
 **Phase 10b refactor (also implemented):** `BackendArena` and `PagemapRep`
 were both retemplated to mirror `Buddy`'s 3-parameter shape:
@@ -1764,6 +1773,18 @@ No in-tree code path is changed in this phase: the existing
 
 # Phase 12: Update backend to use BackendArenaRange
 
+## Status: implementation complete, awaiting commit approval
+
+Substitution implemented and tested in the working tree (uncommitted on
+top of `9c1ca745`). `BackendArena::add_block` had a latent
+out-of-region pagemap-probe bug in its successor-min branch that
+became reachable once `BackendArenaRange` started serving fixed-region
+allocations; fixed in this phase (see "Issue found during Phase 12
+test run" below). Full ctest suite passes (86/86).
+
+Diff: 6 files, 183/45 +/- (PLAN.md, both pipeline range headers,
+`backend_arena.h`, `backend_arena_bins.h`, `backend_arena.cc`).
+
 ## Goal
 
 Replace every `LargeBuddyRange` instantiation in the range
@@ -1787,9 +1808,12 @@ default pipeline wiring changes.
 
 ## Pre-conditions
 
-- Phase 10 (BackendArenaRange) is committed and all its tests pass.
-- Phase 11 (final review of Phases 9–10) is complete.
+- Phase 10 (BackendArenaRange) is committed and all its tests pass
+  (commit `9c1ca745`).
+- Phase 11 (final review of Phases 9–10) was waived by the user;
+  Phase 12 proceeds without it.
 - Baseline: the checkout builds and all tests pass before this change.
+  Recorded after 9c1ca745: 86/86 ctest passed, no warnings.
 
 ## Analysis of every LargeBuddyRange instantiation
 
@@ -1809,8 +1833,8 @@ LargeBuddyRange<GlobalCacheSizeBits, bits::BITS - 1, Pagemap, MinSizeBits>
   **unaligned** on PALs without `AlignedAllocation` (e.g. Linux mmap)
   and aligned otherwise. `BackendArenaRange::refill` currently still
   carries the aligned/unaligned dual path inherited from
-  `LargeBuddyRange`; collapsing this into a single path is in scope for
-  Step 4 below.
+  `LargeBuddyRange`; collapsing this into a single path is deferred to
+  Phase 13.
 
 **2. LargeObjectRange (local cache)**
 ```cpp
@@ -1820,11 +1844,12 @@ LargeBuddyRange<LocalCacheSizeBits, LocalCacheSizeBits, Pagemap, page_size_bits>
 
 - `MAX_SIZE_BITS = LocalCacheSizeBits = 21` (2 MiB). Non-global mode.
   Overflow goes to parent.
-- `BackendArenaRange::dealloc_overflow` forwards directly to parent
-  without decomposition. Since the chunk-bit width
-  (`MAX_SIZE_BITS - MIN_CHUNK_BITS = 7` on 64-bit) is small, the arena
-  has at most 128 chunk slots — overflow can only produce one block of
-  exactly `1 << MAX_SIZE_BITS`.
+- `BackendArenaRange::parent_dealloc` forwards directly to parent
+  without decomposition (single block returned by
+  `BackendArena::add_block` when consolidation reaches the arena-scale
+  upper bound). The size is a chunk multiple up to `2^MAX_SIZE_BITS`,
+  not necessarily power-of-two — the parent must accept arbitrary
+  chunk-multiple sizes.
 - Wrapped in `StaticConditionalRange` — no impact on the substitution.
 
 ### `meta_protected_range.h`
@@ -1863,7 +1888,8 @@ stl::conditional_t<
   `MAX_SIZE_BITS = max_page_chunk_size_bits` (typically
   `page_size_bits` when page_size_bits > MIN_CHUNK_BITS, e.g.
   huge pages at 21 bits).
-- Non-global mode. Overflow decomposed and passed to parent.
+- Non-global mode. Overflow forwarded to parent as one consolidated
+  chunk-multiple block via `parent_dealloc`.
 
 **7. ObjectRange (local)**
 ```cpp
@@ -1891,16 +1917,12 @@ template parameters, no API calls, no structural changes.
 ### Step 1: Replace LargeBuddyRange → BackendArenaRange
 
 In `src/snmalloc/backend/standard_range.h`:
-- Line 32: `LargeBuddyRange<` → `BackendArenaRange<`
-- Line 52: `LargeBuddyRange<` → `BackendArenaRange<`
+- 2 instantiations of `LargeBuddyRange<` (GlobalR, LargeObjectRange).
 
 In `src/snmalloc/backend/meta_protected_range.h`:
-- Line 35: `LargeBuddyRange<` → `BackendArenaRange<`
-- Line 54: `LargeBuddyRange<` → `BackendArenaRange<`
-- Line 71: `LargeBuddyRange<` → `BackendArenaRange<`
-- Line 82: `LargeBuddyRange<` → `BackendArenaRange<`
-- Line 93: `LargeBuddyRange<` → `BackendArenaRange<`
-- Line 103: `LargeBuddyRange<` → `BackendArenaRange<`
+- 6 instantiations of `LargeBuddyRange<` (GlobalR, CentralObjectRange,
+  CentralMetaRange, the `conditional_t` huge-page cache,
+  ObjectRange, MetaRange).
 
 ### Step 2: Verify include paths
 
@@ -1923,10 +1945,66 @@ Both files include `"../backend/backend.h"` which includes
 **Test gate**: full `ctest` passes. No new tests needed — the existing
 test suite exercises the pipeline end-to-end.
 
+### Issue found during Phase 12 test run: out-of-region pagemap probe
+
+`func-fixed_region_alloc-check` segfaulted in `PagemapRep::can_consolidate`
+when `BackendArena::add_block` was called with a block whose
+`succ_addr = addr + size` sat one chunk past the registered pagemap
+range (the last 8 MiB of a 256 MiB FixedRange). The bug shape matches
+the `buddy.h:90-93` comment exactly: `can_consolidate` reads the
+pagemap entry at `succ_addr`, and that read is only safe once a
+tree-membership test has confirmed the address is in our region.
+
+**Fix.** In `BackendArena::add_block`, the successor-min branch was
+reordered so the tree-membership check (`contains_min(succ_addr)`)
+short-circuits before the pagemap probe (`Rep::can_consolidate`).
+All other can_consolidate call sites already had their preconditions
+established (either `addr` is the input block, or the address was
+returned from `range_tree.neighbours()` and is in the tree).
+
+**Regression coverage.** `MockRep` was extended with a per-chunk
+`boundary` flag stored on `mock_entry`. `MockRep::can_consolidate(addr)`
+now returns `!mock_store[mock_index(addr)].boundary` — faithful to the
+real `PagemapRep::can_consolidate` reading `entry.is_boundary()`. The
+`mock_index` bounds assertion fires on any out-of-range probe, so the
+unsafe pattern trips in unit tests rather than only as a segfault in
+production. A new test `test_block_at_arena_top_edge` adds a block
+whose `succ_addr` sits one past the arena's pagemap; without the
+reorder this test reproduces the original failure.
+
+This unification also subsumed the previous `BoundaryMockRep` and its
+`boundary_addrs` global `std::set`: the four boundary tests
+(`test_boundary_blocks_predecessor`, `test_boundary_blocks_successor`,
+`test_boundary_partial`, `test_boundary_blocks_min_predecessor`) now
+run on `Arena<K>` and set `mock_store[mock_index(addr)].boundary = true`
+instead. Net −35 lines in `backend_arena.cc`.
+
+A leftover `throw "..."` in `backend_arena_bins.h:807` (used as a
+constexpr-failure trick in the `BinTable` constructor) caused a build
+failure in `-fno-exceptions` configurations during Phase 12. Replaced
+with `SNMALLOC_CHECK(false && "...")`, which is non-constexpr and
+fails compile-time evaluation the same way without requiring
+exception support.
+
 ### Step 4: Retire the `ParentRange::Aligned` concept
 
-Once `BackendArenaRange` is the only large-range layer, the
-`Aligned` template property loses most of its remaining use:
+**Deferred to Phase 13.** Originally listed here but moved out for the
+following reasons (rubber-duck review):
+- It touches `LargeBuddyRange`, which Phase 12 explicitly keeps
+  available for alternative configurations / embedders.
+- It changes the public range concept (every pass-through range loses
+  a static field) — a structural change, not a wiring change.
+- It would split Phase 12 across an atomic-substitution commit and a
+  separate concept-cleanup commit anyway; better to make that split
+  explicit in the plan.
+
+Phase 12 ends after Step 3 with the test suite green.
+
+## Phase 13: Retire `ParentRange::Aligned`
+
+Once `BackendArenaRange` is the only large-range layer in the default
+pipelines, the `Aligned` template property loses most of its remaining
+use:
 
 - `BackendArenaRange::Aligned` is always `true` (the bin scheme
   guarantees size-aligned output for in-arena allocations).
@@ -1935,7 +2013,7 @@ Once `BackendArenaRange` is the only large-range layer, the
   boundaries, so an unaligned parent no longer requires a separate
   refill path.
 
-Plan:
+Plan (deferred until after Phase 12 lands):
 
 1. **Collapse `BackendArenaRange::refill` to a single path.** Drop the
    `if (ParentRange::Aligned)` branch. The unified path allocates
@@ -1953,16 +2031,35 @@ Plan:
    branch is dead once the property goes away; replace with an
    unconditional delegate (sizes ≥ `2^MAX_SIZE_BITS` are always
    forwarded to the parent — alignment is no longer differentiated).
-3. **Remove `Aligned` from the Range concept.** Once
-   `BackendArenaRange` and `SmallBuddyRange` no longer reference it,
-   drop the `static constexpr bool Aligned` field from every
+   **Hazard:** for a `BackendArenaRange` directly above an unaligned
+   parent (`PalRange` on PALs without `AlignedAllocation`), the
+   oversize delegation can return a non-size-aligned block while
+   `BackendArenaRange::Aligned` is `true`. Resolve at Phase 13 start
+   by either (i) routing oversize allocations through the same
+   over-allocate-and-trim path `refill` uses for unaligned parents,
+   or (ii) keeping an explicit alignment-preserving fallback for the
+   unaligned-parent case until in-tree pipelines no longer expose
+   that combination.
+3. **Decide what to do with `LargeBuddyRange`'s use of `Aligned`.**
+   `LargeBuddyRange::refill` and oversize-fallback still consume
+   `ParentRange::Aligned` (`largebuddyrange.h:273`, `:357`). Either:
+   (a) leave `LargeBuddyRange` alone and keep the `Aligned` field on
+   pass-through ranges (Phase 13 then only collapses
+   `BackendArenaRange::refill` and oversize-fallback — minimal
+   surface change), or
+   (b) update `LargeBuddyRange` in the same phase to also stop
+   consulting `Aligned`. Option (a) is the smaller change and
+   preserves the embedder contract. Decide at the start of Phase 13.
+4. **(Conditional on 3b.) Remove `Aligned` from the Range concept.**
+   Once neither `BackendArenaRange` nor `LargeBuddyRange` references
+   it, drop the `static constexpr bool Aligned` field from every
    pass-through range (`StatsRange`, `CommitRange`, `LockRange`,
    `IndirectRange`, `StaticRange`, `StaticConditionalRange`,
    `SubRange`, `LogRange`, `NopRange`, `PagemapRegisterRange`,
-   `PalRange`). The `pal_supports<AlignedAllocation, PAL>` query
-   itself remains for PALs that want to advertise the capability,
-   but the range stack no longer threads it through.
-4. **Update `SmallBuddyRange`.** Drop the
+   `PalRange`, `EmptyRange`). The `pal_supports<AlignedAllocation, PAL>`
+   query itself remains for PALs that want to advertise the
+   capability, but the range stack no longer threads it through.
+5. **Update `SmallBuddyRange`.** Drop the
    `static_assert(ParentRange::Aligned)` (its parent is always
    `BackendArenaRange` after Phase 12, which always provides aligned
    output by construction).
@@ -1981,7 +2078,7 @@ test suite is the gate.
 
 2. **Overflow behaviour.** `LargeBuddyRange::dealloc_overflow` returns
    a single block of exactly `1 << MAX_SIZE_BITS`.
-   `BackendArenaRange::dealloc_overflow` forwards a single block of the
+   `BackendArenaRange::parent_dealloc` forwards a single block of the
    consolidated size directly to the parent. The size can be any
    chunk multiple up to `2^MAX_SIZE_BITS`, not just power-of-two, but
    the parent (now itself a `BackendArenaRange` or pass-through layer)
@@ -1991,6 +2088,16 @@ test suite is the gate.
    configuration pushes memory directly into `GlobalR.dealloc_range`.
    This works with `BackendArenaRange` because `dealloc_range` has the
    same signature and contract.
+
+4. **Pagemap metadata footprint.** `BackendArenaRange` uses up to
+   three pagemap entries per free block (`backend_arena_range.h:12-17`)
+   — one at the base, one at `base + UNIT_SIZE`, one at
+   `base + 2*UNIT_SIZE`. `LargeBuddyRange`'s `BuddyChunkRep` only
+   touched the base entry. Pagemap registration covers every
+   `MIN_CHUNK_SIZE` stride for the full reserved address range
+   (`pagemap.h:60-65`), so this is safe in the in-tree pipeline, but
+   external embedders with custom Pagemap implementations should
+   verify their pagemap entries cover the per-unit stride.
 
 ## Resolved during plan review
 

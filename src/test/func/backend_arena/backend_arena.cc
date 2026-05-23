@@ -64,7 +64,9 @@ namespace snmalloc
 
   // Each chunk-aligned address maps to a mock_entry via its chunk index.
   // word1/word2 hold bin-tree children; range_word1/range_word2 hold
-  // range-tree children. variant and large_size hold metadata.
+  // range-tree children. variant and large_size hold metadata. boundary
+  // mirrors the real PagemapRep's entry.is_boundary() — set it on a
+  // chunk to suppress consolidation across that chunk.
   struct mock_entry
   {
     uintptr_t word1{0};
@@ -73,6 +75,7 @@ namespace snmalloc
     uintptr_t range_word2{0};
     BackendArenaVariant variant{BackendArenaVariant::Min};
     size_t large_size{0};
+    bool boundary{false};
   };
 
   // Size the array for the largest test arena + trailing room.
@@ -196,9 +199,17 @@ namespace snmalloc
       mock_store[mock_index(addr)].large_size = s;
     }
 
-    static bool can_consolidate(uintptr_t)
+    // Mirrors PagemapRep::can_consolidate, which reads
+    // entry.is_boundary() from the pagemap. The boundary flag lives
+    // per-chunk in mock_store; mock_index asserts the index is in
+    // range, so any caller that probes outside the arena trips the
+    // assertion — this catches the buddy.h:90-93 unsafe-probe pattern
+    // (calling can_consolidate before confirming the address is in
+    // our region) in BackendArena unit tests rather than as a runtime
+    // segfault in production builds.
+    static bool can_consolidate(uintptr_t addr)
     {
-      return true;
+      return !mock_store[mock_index(addr)].boundary;
     }
   };
 
@@ -387,7 +398,8 @@ namespace snmalloc
 
     for (auto& b : blocks)
     {
-      auto result = arena.add_block(chunk_addr(b.chunk_idx), chunk_size(b.size));
+      auto result =
+        arena.add_block(chunk_addr(b.chunk_idx), chunk_size(b.size));
       SNMALLOC_ASSERT(result.first == 0 && result.second == 0);
       UNUSED(result);
       arena.check_invariant(true);
@@ -473,7 +485,8 @@ namespace snmalloc
   static void
   add_and_check(ArenaT& arena, size_t chunk_idx, size_t size_in_chunks)
   {
-    auto result = arena.add_block(chunk_addr(chunk_idx), chunk_size(size_in_chunks));
+    auto result =
+      arena.add_block(chunk_addr(chunk_idx), chunk_size(size_in_chunks));
     SNMALLOC_ASSERT(result.first == 0 && result.second == 0);
     UNUSED(result);
     arena.check_invariant(true);
@@ -1023,7 +1036,8 @@ namespace snmalloc
         for (size_t j = start; j < start + size; j++)
           allocated[j] = false;
 
-        auto result = arena.add_block(chunk_addr(BASE + start), chunk_size(size));
+        auto result =
+          arena.add_block(chunk_addr(BASE + start), chunk_size(size));
         oracle.add(start, size);
 
         if (result.first != 0)
@@ -1225,7 +1239,8 @@ namespace snmalloc
         for (size_t j = start; j < start + size; j++)
           owner[j] = my_id;
 
-        auto result = arena.add_block(chunk_addr(BASE + start), chunk_size(size));
+        auto result =
+          arena.add_block(chunk_addr(BASE + start), chunk_size(size));
         oracle.add(start, size);
 
         if (result.first != 0)
@@ -1334,58 +1349,23 @@ namespace snmalloc
   // ==================================================================
   // (J) Boundary consolidation prevention
   // ==================================================================
-
-  // A Rep variant that blocks consolidation at specific addresses.
-  static std::set<uintptr_t> boundary_addrs;
-
-  struct BoundaryMockRep
-  {
-    using BinRep = MockRep::BinRep;
-    using RangeRep = MockRep::RangeRep;
-
-    static BackendArenaVariant get_variant(uintptr_t addr)
-    {
-      return MockRep::get_variant(addr);
-    }
-
-    static void set_variant(uintptr_t addr, BackendArenaVariant v)
-    {
-      MockRep::set_variant(addr, v);
-    }
-
-    static size_t get_large_size(uintptr_t addr)
-    {
-      return MockRep::get_large_size(addr);
-    }
-
-    static void set_large_size(uintptr_t addr, size_t s)
-    {
-      MockRep::set_large_size(addr, s);
-    }
-
-    static bool can_consolidate(uintptr_t higher_addr)
-    {
-      return boundary_addrs.find(higher_addr) == boundary_addrs.end();
-    }
-  };
-
-  template<size_t K>
-  using BoundaryArena =
-    BackendArena<BoundaryMockRep, MIN_CHUNK_BITS, MIN_CHUNK_BITS + K>;
+  //
+  // The boundary field on mock_entry suppresses consolidation across
+  // that chunk; MockRep::can_consolidate reads it. This mirrors the
+  // real PagemapRep::can_consolidate reading entry.is_boundary().
 
   // Test: predecessor merge blocked by boundary.
   static void test_boundary_blocks_predecessor()
   {
     reset_mock_store();
-    boundary_addrs.clear();
     constexpr size_t K = 6;
-    BoundaryArena<K> arena;
+    Arena<K> arena;
 
     uintptr_t p_addr = chunk_addr(2);
     uintptr_t a_addr = chunk_addr(4);
 
     // Place a boundary at a_addr — blocks should not consolidate leftward.
-    boundary_addrs.insert(a_addr);
+    mock_store[mock_index(a_addr)].boundary = true;
 
     arena.add_block(p_addr, chunk_size(2));
     arena.add_block(a_addr, chunk_size(2));
@@ -1404,15 +1384,14 @@ namespace snmalloc
   static void test_boundary_blocks_successor()
   {
     reset_mock_store();
-    boundary_addrs.clear();
     constexpr size_t K = 6;
-    BoundaryArena<K> arena;
+    Arena<K> arena;
 
     uintptr_t a_addr = chunk_addr(2);
     uintptr_t s_addr = chunk_addr(4);
 
     // Place a boundary at s_addr — blocks should not consolidate rightward.
-    boundary_addrs.insert(s_addr);
+    mock_store[mock_index(s_addr)].boundary = true;
 
     arena.add_block(s_addr, chunk_size(4));
     arena.add_block(a_addr, chunk_size(2));
@@ -1431,14 +1410,13 @@ namespace snmalloc
   static void test_boundary_partial()
   {
     reset_mock_store();
-    boundary_addrs.clear();
     constexpr size_t K = 6;
-    BoundaryArena<K> arena;
+    Arena<K> arena;
 
     // Three adjacent blocks: chunks [4,6), [6,8), [8,10).
     // Boundary at chunk 8 blocks [6,8) ↔ [8,10) merge but allows
     // [4,6) ↔ [6,8) merge into a 4-aligned block at chunk 4.
-    boundary_addrs.insert(chunk_addr(8));
+    mock_store[mock_index(chunk_addr(8))].boundary = true;
 
     arena.add_block(chunk_addr(4), chunk_size(2));
     arena.add_block(chunk_addr(8), chunk_size(2));
@@ -1454,21 +1432,48 @@ namespace snmalloc
     printf("  Boundary partial (P merges, S blocked): OK\n");
   }
 
+  // Regression test: a block whose successor address sits one past
+  // the arena's pagemap must not trigger a can_consolidate probe of
+  // that out-of-range chunk. The fix is in BackendArena::add_block —
+  // tree-membership tests gate the can_consolidate read. MockRep's
+  // can_consolidate now dereferences mock_store via mock_index, which
+  // asserts on out-of-range indices, so an unguarded probe in
+  // add_block trips here rather than only as a segfault in production
+  // builds.
+  static void test_block_at_arena_top_edge()
+  {
+    reset_mock_store();
+    constexpr size_t K = 10;
+    Arena<K> arena;
+    constexpr size_t ARENA_CHUNKS = size_t{1} << K;
+
+    // Block ending at the very top of the arena (succ_addr would
+    // address chunk ARENA_CHUNKS, one past mock_store).
+    uintptr_t top_addr = chunk_addr(ARENA_CHUNKS - 4);
+    arena.add_block(top_addr, chunk_size(4));
+    arena.check_invariant(true);
+
+    auto r1 = arena.remove_block(chunk_size(4));
+    SNMALLOC_ASSERT(r1 == top_addr);
+
+    printf("  Block at arena top edge: OK\n");
+  }
+
   // Test: min-size predecessor blocked by boundary.
   static void test_boundary_blocks_min_predecessor()
   {
     reset_mock_store();
-    boundary_addrs.clear();
     constexpr size_t K = 6;
-    BoundaryArena<K> arena;
+    Arena<K> arena;
 
     uintptr_t p_addr = chunk_addr(4);
     uintptr_t a_addr = chunk_addr(5);
 
-    boundary_addrs.insert(a_addr);
+    mock_store[mock_index(a_addr)].boundary = true;
 
     arena.add_block(p_addr, chunk_size(1)); // min-size block
-    arena.add_block(a_addr, chunk_size(1)); // adjacent, but boundary prevents merge
+    arena.add_block(
+      a_addr, chunk_size(1)); // adjacent, but boundary prevents merge
 
     auto r1_addr = arena.remove_block(chunk_size(1));
     auto r2_addr = arena.remove_block(chunk_size(1));
@@ -1539,6 +1544,7 @@ int main()
   snmalloc::test_boundary_blocks_predecessor();
   snmalloc::test_boundary_blocks_successor();
   snmalloc::test_boundary_partial();
+  snmalloc::test_block_at_arena_top_edge();
   snmalloc::test_boundary_blocks_min_predecessor();
 
   printf("All BackendArena tests passed.\n");
