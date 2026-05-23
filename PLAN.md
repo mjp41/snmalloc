@@ -2000,72 +2000,42 @@ following reasons (rubber-duck review):
 
 Phase 12 ends after Step 3 with the test suite green.
 
-## Phase 13: Retire `ParentRange::Aligned`
+## Phase 13: Retire `ParentRange::Aligned` — DROPPED
 
-Once `BackendArenaRange` is the only large-range layer in the default
-pipelines, the `Aligned` template property loses most of its remaining
-use:
+**Status: dropped on review.** Phase 13 was deferred from Phase 12 with
+the intent of collapsing `BackendArenaRange::refill`'s two-path
+conditional and (optionally) removing `ParentRange::Aligned` from the
+range concept. Closer inspection of the existing code found the
+conditional is load-bearing, not vestigial:
 
-- `BackendArenaRange::Aligned` is always `true` (the bin scheme
-  guarantees size-aligned output for in-arena allocations).
-- `BackendArenaRange::add_range` already trims arbitrary
-  (page-aligned-but-not-chunk-aligned) parent input to chunk
-  boundaries, so an unaligned parent no longer requires a separate
-  refill path.
+- **The two paths give different capabilities, not just different
+  efficiencies.** The aligned-parent path serves caller sizes up to
+  `(1 << MAX_SIZE_BITS) - 1`. The unaligned-parent path's
+  `while (needed_size <= refill_size)` guard caps caller size at
+  ~`REFILL_SIZE / 2`. Unifying on the unaligned strategy reduces
+  capability for aligned-parent configs.
 
-Plan (deferred until after Phase 12 lands):
+- **The aligned-parent path's carve shortcut is precise, not a perf
+  optimisation.** It hands the caller's `size` bytes back directly
+  and calls `add_range(refill + size, refill_size - size)` —
+  passing `refill_size - size` (strictly less than `refill_size`)
+  to `add_block`, which satisfies `add_block`'s
+  `size < 2^MAX_SIZE_BITS` precondition even when
+  `REFILL_SIZE_BITS == MAX_SIZE_BITS` (the `LargeObjectRange` config
+  in `standard_range.h:52-56`). A unified "add the whole refill then
+  recurse" path violates that precondition for the same config.
 
-1. **Collapse `BackendArenaRange::refill` to a single path.** Drop the
-   `if (ParentRange::Aligned)` branch. The unified path allocates
-   `refill_size` from the parent, places the chunk-aligned remainder
-   into the arena via `add_range` (which already trims for unaligned
-   parents), then recursively calls `alloc_range(size)` to obtain the
-   size-aligned chunk for the caller. The refill-size accounting must
-   keep `refill_size < 2^MAX_SIZE_BITS` so the assertion in
-   `add_block` holds for the whole-refill `add_range` call; configs
-   where `REFILL_SIZE_BITS == MAX_SIZE_BITS` (the local-cache
-   configurations) need either a one-bit refill-size reduction or a
-   `MAX_SIZE_BITS` bump.
-2. **Drop the oversize-fallback alignment check.** In `alloc_range`,
-   the `if (ParentRange::Aligned) return parent.alloc_range(size);`
-   branch is dead once the property goes away; replace with an
-   unconditional delegate (sizes ≥ `2^MAX_SIZE_BITS` are always
-   forwarded to the parent — alignment is no longer differentiated).
-   **Hazard:** for a `BackendArenaRange` directly above an unaligned
-   parent (`PalRange` on PALs without `AlignedAllocation`), the
-   oversize delegation can return a non-size-aligned block while
-   `BackendArenaRange::Aligned` is `true`. Resolve at Phase 13 start
-   by either (i) routing oversize allocations through the same
-   over-allocate-and-trim path `refill` uses for unaligned parents,
-   or (ii) keeping an explicit alignment-preserving fallback for the
-   unaligned-parent case until in-tree pipelines no longer expose
-   that combination.
-3. **Decide what to do with `LargeBuddyRange`'s use of `Aligned`.**
-   `LargeBuddyRange::refill` and oversize-fallback still consume
-   `ParentRange::Aligned` (`largebuddyrange.h:273`, `:357`). Either:
-   (a) leave `LargeBuddyRange` alone and keep the `Aligned` field on
-   pass-through ranges (Phase 13 then only collapses
-   `BackendArenaRange::refill` and oversize-fallback — minimal
-   surface change), or
-   (b) update `LargeBuddyRange` in the same phase to also stop
-   consulting `Aligned`. Option (a) is the smaller change and
-   preserves the embedder contract. Decide at the start of Phase 13.
-4. **(Conditional on 3b.) Remove `Aligned` from the Range concept.**
-   Once neither `BackendArenaRange` nor `LargeBuddyRange` references
-   it, drop the `static constexpr bool Aligned` field from every
-   pass-through range (`StatsRange`, `CommitRange`, `LockRange`,
-   `IndirectRange`, `StaticRange`, `StaticConditionalRange`,
-   `SubRange`, `LogRange`, `NopRange`, `PagemapRegisterRange`,
-   `PalRange`, `EmptyRange`). The `pal_supports<AlignedAllocation, PAL>`
-   query itself remains for PALs that want to advertise the
-   capability, but the range stack no longer threads it through.
-5. **Update `SmallBuddyRange`.** Drop the
-   `static_assert(ParentRange::Aligned)` (its parent is always
-   `BackendArenaRange` after Phase 12, which always provides aligned
-   output by construction).
+- **The proposed "fix" for the precondition has real cost.** Either
+  cut `LocalCacheSizeBits` by 1 (half the per-local cache) or bump
+  `MAX_SIZE_BITS` by 1 (double the local arena's internal state),
+  for no behavioural win.
 
-This is a structural simplification, not a behavioural change — the
-test suite is the gate.
+- **`LargeBuddyRange` would still consume `Aligned`** under the
+  agreed-minimal (a)+(ii) scope, so the field's footprint in
+  pass-through ranges doesn't shrink — defeating the only
+  structural-cleanup motivation.
+
+The BackendArena refactor (Phases 1–12) ends with Phase 12. No Phase 13.
 
 ## Risks
 
