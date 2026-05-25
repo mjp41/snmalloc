@@ -2000,7 +2000,7 @@ following reasons (rubber-duck review):
 
 Phase 12 ends after Step 3 with the test suite green.
 
-## Phase 13: Retire `ParentRange::Aligned` — DROPPED
+## Investigated and dropped: Retire `ParentRange::Aligned`
 
 **Status: dropped on review.** Phase 13 was deferred from Phase 12 with
 the intent of collapsing `BackendArenaRange::refill`'s two-path
@@ -2089,3 +2089,1046 @@ The BackendArena refactor (Phases 1–12) ends with Phase 12. No Phase 13.
   generalisation phase).
 - Performance benchmarking (separate task).
 - Any front-end changes.
+
+# Phase 13: Uniform exp+mantissa sizeclass encoding
+
+## Goal
+
+Replace the large-sizeclass encoding `from_large_class(clz(size - 1))`
+(which can only represent powers of two) with the same exp+mantissa
+scheme small classes already use. After this phase, **every** size
+class — small or large — is represented as
+`bits::from_exp_mant<INTERMEDIATE_BITS, MIN_ALLOC_STEP_BITS>(global_index)`,
+where `global_index` is a single continuous index that runs across
+small AND large. So a single uniform table accessor works across the
+whole range, and the large table is the natural continuation of the
+small one.
+
+Specifically:
+- Small class `sc ∈ [0, NUM_SMALL_SIZECLASSES)` corresponds to
+  `from_exp_mant<INTERMEDIATE_BITS, MIN_ALLOC_STEP_BITS>(sc)`
+  (unchanged from today's small encoding in `sizeclassstatic.h:62-64`).
+- Large class `lc ∈ [0, NUM_LARGE_CLASSES)` corresponds to
+  `from_exp_mant<INTERMEDIATE_BITS, MIN_ALLOC_STEP_BITS>(NUM_SMALL_SIZECLASSES + lc)`.
+
+This is the "continuation of the small exp+mantissa", NOT a separate
+exp+mantissa space starting at `MAX_SMALL_SIZECLASS_BITS`. Adjacent
+classes step by `2^(E - INTERMEDIATE_BITS)` continuously, with no
+jump at the small/large boundary.
+
+No production behaviour changes yet: the front-end still calls
+`large_size_to_chunk_size(size) = next_pow2(size)` and writes the
+pagemap with the corresponding pow2-rounded sizeclass. The non-pow2
+large sizeclasses are **populated in the table** (so the size /
+slab_mask metadata is correct should any code path query them) but
+are **unreachable** from `size_to_sizeclass_full` and
+`large_size_to_chunk_size` until Phase 15.
+
+That means:
+- `size_to_sizeclass_full(non_pow2_large_size)` must continue to
+  return the pow2-rounded sizeclass (the one whose
+  `sizeclass_full_to_size` equals `next_pow2(size)`). Phase 15
+  changes this to return the exp+mantissa-rounded sizeclass.
+- `large_size_to_chunk_size(size)` continues to return
+  `next_pow2(size)`. Phase 15 changes this to return
+  `sizeclass_full_to_size(size_to_sizeclass_full(size))`.
+
+The two functions stay in lock-step: the front-end's reservation
+size and the pagemap-recorded sizeclass must agree, or `dealloc_chunk`
+gets the wrong size. Phase 15 changes both together.
+
+Phase 13 lays the encoding ground; Phase 14 adds the per-chunk
+offset; Phase 15 flips the front-end.
+
+## Why now
+
+- The large-class table is currently indexed by leading-zero count,
+  which has exactly one entry per power-of-two size — fundamentally
+  pow2-only.
+- Switching to exp+mantissa multiplies the large-class count by
+  `1 << INTERMEDIATE_BITS = 4` (default), taking the default
+  (`MAX_SMALL_SIZECLASS_BITS=16`, `address_bits=48`) from 32 large
+  entries to 128.
+- Once small and large share the same exp+mantissa scheme, the
+  small/large tag bit in `sizeclass_t` becomes redundant: the two
+  ranges can live in a single contiguous index space, and
+  `is_small()` becomes `value < 1 + NUM_SMALL_SIZECLASSES` instead
+  of `(value & TAG) != 0`. This drops one bit from
+  `SIZECLASS_REP_SIZE`, undoing roughly half of the alignment
+  cascade widening that Phase 13 would otherwise cause.
+
+(For the default config, `NUM_SMALL_SIZECLASSES = 44`, defined as
+`size_to_sizeclass_const(MAX_SMALL_SIZECLASS_SIZE) + 1` in
+`sizeclassstatic.h:53-54`. All numeric examples below use the
+symbol `NUM_SMALL_SIZECLASSES` for the count, with `44` as the
+default-config concrete value.)
+
+## Uniform (untagged) sizeclass encoding
+
+Today `sizeclass_t::value` packs `[small: TAG | sc]` and
+`[large: large_class]`, with a discriminator bit at position
+`TAG_SIZECLASS_BITS`. Width consumed in the pagemap word =
+`TAG_SIZECLASS_BITS + 1`.
+
+After Phase 13 the discriminator is unnecessary because the small
+and large ranges are both exp+mantissa-indexed and can sit in a
+single contiguous index space.
+
+### Index 0 is reserved as the unmapped sentinel
+
+`value == 0` MUST remain the "default / unmapped" sentinel. An
+unmapped pagemap entry reads as all-zero, and the size-lookup
+machinery relies on `sizeclass == 0 ⇒ size == 0` to safely answer
+`malloc_usable_size` / `remaining_bytes` queries on
+not-an-allocation pointers without branching on validity.
+
+So the uniform layout reserves index 0 and shifts everything up by
+one:
+
+```
+0                                                  -> unmapped sentinel
+[1,                 1 + NUM_SMALL_SIZECLASSES)      -> small  (sc index = value - 1)
+[1 + NUM_SMALL_SIZECLASSES,
+ 1 + NUM_SMALL_SIZECLASSES + NUM_LARGE_CLASSES)     -> large  (lc index = value - 1 - NUM_SMALL)
+```
+
+Width consumed = `next_pow2_bits_const(1 + NUM_SMALL_SIZECLASSES +
+NUM_LARGE_CLASSES)`. For the default config:
+`next_pow2_bits_const(1 + 44 + 128) = next_pow2_bits_const(173) = 8`.
+The tagged scheme today (without the same uniform shift) would need
+`max(6, 8) + 1 = 9`. **One bit saved**
+(`SIZECLASS_REP_SIZE = 256`, `REMOTE_MIN_ALIGN = 512`).
+
+### Table padding to avoid the subtract
+
+The shift introduces a `- 1` on the size/metadata-lookup hot path
+(`sizeclass_metadata[value - 1]`). We pay that on every dealloc.
+
+Cheaper option: pad the table by one slot at index 0 (a dummy
+"default" entry whose `size` is 0 and whose `slab_mask` is 0). Then
+the lookup is `sizeclass_metadata[value]` with no subtract — and
+querying the sentinel returns "size 0 / slab_mask 0" naturally,
+which is the answer the existing API wants for unmapped pointers.
+
+Cost: one wasted slot per table indexed by `sizeclass_t::raw()`.
+Inspect each such table in `sizeclasstable.h`:
+- `sizeclass_metadata` ModArray (`sizeclass_data_fast` /
+  `sizeclass_data_slow`): pad slot 0 with zeros. Worth it (hot
+  path).
+- `sizeclass_compress_t` reverse lookups, if any: pad similarly.
+- `ChunkSizeMetadata` (if indexed by raw value): inspect first.
+
+The wasted-slot cost is `sizeof(slot) * num_tables` ≈ tens to
+hundreds of bytes — negligible compared to the hot-path subtract
+saved.
+
+### `sizeclass_t` accessors
+
+- `from_small_class(sc) { return {sc + 1}; }`
+- `from_large_class(lc) { return {1 + NUM_SMALL_SIZECLASSES + lc}; }`
+- `as_small() { return value - 1; }` (asserts `is_small()`).
+- `as_large() { return value - 1 - NUM_SMALL_SIZECLASSES; }`
+- `is_small() { return value < 1 + NUM_SMALL_SIZECLASSES &&
+                          value != 0; }` — but in practice
+  `is_small` is only meaningful for non-sentinel values; the
+  default-sentinel case is filtered upstream. Simplification:
+  `is_small() { return value - 1 < NUM_SMALL_SIZECLASSES; }`
+  (works because for `value == 0`, `value - 1` underflows to
+  SIZE_MAX which is ≥ NUM_SMALL_SIZECLASSES, so returns false —
+  matching today's semantics where `sizeclass_t{}` is not "small").
+- `is_default() { return value == 0; }` — unchanged.
+- `raw()` returns the new shifted value — audit all callers (see
+  Risks).
+
+## RemoteAllocator alignment chain
+
+Verified by inspection of `sizeclasstable.h:18-33` and
+`metadata.h:16-45`:
+
+```
+SIZECLASS_BITS              = next_pow2_bits_const(
+                                 1
+                                 + NUM_SMALL_SIZECLASSES
+                                 + NUM_LARGE_CLASSES)
+                              (uniform encoding; no separate tag bit;
+                                 index 0 reserved as the unmapped sentinel)
+                              (= 8 after Phase 13 with
+                                 INTERMEDIATE_BITS=2 large-classes)
+  -> SIZECLASS_REP_SIZE      = 1 << SIZECLASS_BITS
+       (= 256 after Phase 13)
+       (used as ModArray length for sizeclass_metadata; the
+        encoding occupies bits 0..SIZECLASS_BITS-1)
+  -> REMOTE_MIN_ALIGN        = max(CACHELINE_SIZE, SIZECLASS_REP_SIZE) << 1
+       (= 512 after Phase 13)
+  -> REMOTE_BACKEND_MARKER   currently hard-coded `1 << 7`. After
+       Phase 13, MUST be derived:
+       `static constexpr address_t REMOTE_BACKEND_MARKER =
+          SIZECLASS_REP_SIZE;`
+       (= bit 8 after Phase 13).
+  -> BACKEND_RESERVED_MASK   = (REMOTE_BACKEND_MARKER << 1) - 1
+       (= 0x1FF after Phase 13 — low 9 bits reserved for backend.)
+```
+
+NOTE: the `+ 1` previously in `SIZECLASS_REP_SIZE = 1 <<
+(TAG_SIZECLASS_BITS + 1)` is dropped — that `+ 1` was for the
+small/large tag bit which uniform encoding eliminates. (Phase 13 also
+renames the constant to `SIZECLASS_BITS` since the encoding no longer
+carries a separate tag.) The static-assert in `metadata.h:64-67` that
+enforces `REMOTE_BACKEND_MARKER == SIZECLASS_REP_SIZE` continues to
+hold by construction.
+
+**Concrete instances of `RemoteAllocator`** (all places where the
+alignment cost lands):
+
+- Inline `RemoteAllocator` inside `CoreAllocator` — one per
+  allocator (`corealloc.h:155-159`), allocated from the meta range.
+- `unused_remote` BSS global (`commonconfig.h:120`) — once, static.
+- Stack-local instances in tests `sandbox.cc:162`,
+  `domestication.cc` — test-only.
+
+No other code constrains `RemoteAllocator` alignment.
+
+**Cost of widening `REMOTE_MIN_ALIGN` (256 → 512 in this phase):** at
+most ~256 bytes additional padding per CoreAllocator /
+`unused_remote` — under 1 KB total, paid once, not per allocation.
+Cheap.
+
+## Cascading bit-layout changes elsewhere
+
+`BACKEND_RESERVED_MASK` widens from `0xFF` (8 bits) to `0x1FF` (9
+bits). All backend-side `PagemapRep` layouts that sit immediately
+above the reserved range must shift up by
+`new_marker_pos - old_marker_pos = log2(REMOTE_BACKEND_MARKER) - 7`.
+
+Verified consumers of `BACKEND_RESERVED_MASK` / bits immediately
+above bit 7:
+
+- `backend_arena_range.h:42-50`: `RED_BIT_POS = 8`,
+  `VARIANT_SHIFT = 9`, `LARGE_SIZE_SHIFT = 8`. Today these sit at
+  bits 8/9-10/8. After Phase 13 they shift to bits 9/10-11/9. The
+  `static_assert(Entry::is_backend_allowed_value(...))` at
+  `backend_arena_range.h:64-66` catches any miss at compile time.
+- `backend_helpers/largebuddyrange.h:40-46`: `BuddyChunkRep`
+  `RED_BIT = 1 << 8`. Same shift required. (The plan previously
+  said "`backend_helpers/buddy.h`" — corrected. Grep `RED_BIT` to
+  confirm no other site.)
+
+The plan does the shift in terms of an existing or new constant
+(e.g. `BACKEND_LAYOUT_FIRST_FREE_BIT = log2(REMOTE_BACKEND_MARKER)
++ 1`) rather than hard-coding new bit numbers — so a future widening
+auto-propagates.
+
+## Changes
+
+### `src/snmalloc/ds/sizeclasstable.h`
+
+- `NUM_LARGE_CLASSES`: redefine as
+  `(address_bits - MAX_SMALL_SIZECLASS_BITS) << INTERMEDIATE_BITS`
+  so it tracks the exp+mantissa scheme. Update the comment.
+- `SIZECLASS_BITS` (renamed from `TAG_SIZECLASS_BITS` — the encoding
+  no longer carries a separate tag): redefine as
+  `next_pow2_bits_const(1 + NUM_SMALL_SIZECLASSES + NUM_LARGE_CLASSES)`.
+  The `+ 1` reserves index 0 as the unmapped sentinel.
+- `SIZECLASS_REP_SIZE`: redefine as `1 << SIZECLASS_BITS` (drop
+  the `+ 1` that came from the tag bit).
+- `sizeclass_t`: rewrite the encoding per "Uniform (untagged)
+  sizeclass encoding" (small at `value = sc + 1`, large at
+  `value = 1 + NUM_SMALL_SIZECLASSES + lc`, index 0 is the
+  default sentinel). Drop the `TAG` constant. Convert all accessors
+  (`from_small_class`, `from_large_class`, `as_small`, `as_large`,
+  `is_small`, `index`). Default-construction (`sizeclass_t{}`) and
+  `is_default()` keep their `value == 0` semantics.
+- Audit callers of `sizeclass_t::raw()` — the raw value's meaning
+  has changed (no tag bit, shifted by 1). Most callers use it as a
+  `ModArray` index into `sizeclass_metadata`, which still works
+  with the size-0 padding slot.
+- `sizeclass_metadata` ModArray (`sizeclass_data_fast` and
+  `sizeclass_data_slow`): pad slot 0 with zero-initialised entries
+  (`size = 0`, `slab_mask = 0`, all other fields zero). A
+  `static_assert` after construction enforces this.
+- `sizeclass_metadata` constructor: rewrite as a single contiguous
+  loop over `global_index ∈ [0, NUM_SMALL_SIZECLASSES +
+  NUM_LARGE_CLASSES)`, writing slot `global_index + 1` with the
+  size derived from
+  `bits::from_exp_mant<INTERMEDIATE_BITS, MIN_ALLOC_STEP_BITS>(global_index)`.
+  Small-specific fields populate only for indices < NUM_SMALL;
+  large-specific fields populate only for indices ≥ NUM_SMALL. The
+  current split between small (lines ~190-225) and large
+  (lines 226-238) loops collapses into one, eliminating the
+  pow2-vs-exp+mantissa mismatch the old large loop had.
+- `large_size_to_chunk_size(size)`: **semantics unchanged in this
+  phase** — continues to return `bits::next_pow2(size)`. (Phase 15
+  changes the body to
+  `sizeclass_full_to_size(size_to_sizeclass_full(size))`.)
+- `size_to_sizeclass_full(size)`: **semantics unchanged in this
+  phase** for both branches — still pow2-rounded for large.
+  *Implementation* of the large branch must change because the
+  old body assumed `from_large_class` was a leading-zero-count
+  mapping. Phase 13 redefines `from_large_class(lc)` to mean
+  `from_exp_mant<INTERMEDIATE_BITS, MIN_ALLOC_STEP_BITS>(NUM_SMALL_SIZECLASSES + lc)`,
+  so the new body uses `bits::to_exp_mant` (the literal inverse of
+  `from_exp_mant`) directly:
+  ```
+  size_t pow2 = bits::next_pow2(size);
+  size_t global =
+    bits::to_exp_mant<INTERMEDIATE_BITS, MIN_ALLOC_STEP_BITS>(pow2);
+  return sizeclass_t::from_large_class(global - NUM_SMALL_SIZECLASSES);
+  ```
+  (Pre-Phase-13 there was a separate helper
+  `large_size_to_chunk_sizeclass(size)` returning an `lc` index.
+  Post-Phase-13, small and large share a single global exp+mantissa
+  index space, so the `+NUM_SMALL_SIZECLASSES` / `-NUM_SMALL_SIZECLASSES`
+  round-trip via `lc` cancels out and the helper is removed. The
+  large branch of `size_to_sizeclass_full` inlines the
+  `to_exp_mant` call directly.)
+  (An earlier draft tried a manual
+  `(next_pow2_bits - MIN_ALLOC_STEP_BITS) << INTERMEDIATE_BITS`
+  formula. That is wrong — `to_exp_mant` does not simply place the
+  exponent at MANTISSA_BITS; it uses a `b` offset that makes
+  consecutive pow2 inputs differ by exactly `2^INTERMEDIATE_BITS`.
+  Always use `to_exp_mant`, which is the literal inverse of the
+  table-build helper.)
+  Phase 15 replaces `pow2` with `size` (no `next_pow2`);
+  `to_exp_mant` rounds non-pow2 sizes up to the next exp+mantissa
+  step.
+- The non-pow2 large slots in `sizeclass_metadata` are populated
+  with correct size/slab_mask values in Phase 13 but are
+  unreachable from `size_to_sizeclass_full` /
+  `large_size_to_chunk_size` until Phase 15. This keeps Phase 13's
+  end-to-end behaviour identical to today's.
+- `slab_index`, `start_of_object`, `is_start_of_object`: continue
+  to use `meta.slab_mask`. The metadata table builder sets
+  `slab_mask = info.align - 1` for large (where
+  `info.align = size & (~size + 1)`, the natural alignment from
+  `backend_arena_bins.h:741`). For pow2 sizes, `info.align == size`,
+  so `slab_mask = size - 1` — matching today's value. For
+  non-pow2 sizes (table-populated but unreachable in Phase 13),
+  `slab_mask = info.align - 1 < size - 1`. Phase 14 adds the
+  per-chunk offset that lets recovery work for non-pow2 once
+  Phase 15 lights them up.
+- `round_size(size)` (lines 478-501): large branch left unchanged
+  in this phase — still rounds to next pow2. Phase 15 updates it
+  to match the new `large_size_to_chunk_size`.
+
+### `src/snmalloc/mem/metadata.h`
+
+- Line 45: change
+  `static constexpr address_t REMOTE_BACKEND_MARKER = 1 << 7;` to
+  `static constexpr address_t REMOTE_BACKEND_MARKER =
+     SIZECLASS_REP_SIZE;`
+  so the marker tracks the (now-untagged) sizeclass field width.
+  Adjust the comment to point at `sizeclasstable.h` for the
+  derivation.
+- The existing static-asserts at `metadata.h:64-67` already
+  enforce the invariant; verify they still pass.
+- **Add a public layout constant** on `MetaEntryBase` so backend
+  code can derive shift positions without violating the protected
+  access of `REMOTE_BACKEND_MARKER`. Insert into the `public:`
+  section (after line 113):
+  ```cpp
+  /**
+   * Bit position of the first bit available to backend metadata
+   * layouts above the reserved region. Used by
+   * `backend_arena_range.h` and `largebuddyrange.h` to derive
+   * RED_BIT_POS, VARIANT_SHIFT, and LARGE_SIZE_SHIFT.
+   */
+  static constexpr size_t BACKEND_LAYOUT_FIRST_FREE_BIT =
+    bits::next_pow2_bits_const(REMOTE_BACKEND_MARKER) + 1;
+  ```
+  The `+1` reserves `REMOTE_BACKEND_MARKER`'s own bit (it lives at
+  `next_pow2_bits_const(REMOTE_BACKEND_MARKER)`).
+
+### `src/snmalloc/backend_helpers/backend_arena_range.h` and `src/snmalloc/backend_helpers/largebuddyrange.h`
+
+- Replace hard-coded `RED_BIT_POS = 8`, `VARIANT_SHIFT = 9`,
+  `LARGE_SIZE_SHIFT = 8` in `backend_arena_range.h` with
+  derivations from the new public
+  `MetaEntryBase::BACKEND_LAYOUT_FIRST_FREE_BIT`:
+  `RED_BIT_POS = MetaEntryBase::BACKEND_LAYOUT_FIRST_FREE_BIT;`
+  `LARGE_SIZE_SHIFT = MetaEntryBase::BACKEND_LAYOUT_FIRST_FREE_BIT;`
+  `VARIANT_SHIFT = MetaEntryBase::BACKEND_LAYOUT_FIRST_FREE_BIT + 1;`
+  (the `+1` reserves the RED bit).
+- `backend_arena_range.h:64-66` `static_assert` continues to enforce
+  no clash with reserved bits.
+- `largebuddyrange.h:40-46`: `BuddyChunkRep::RED_BIT = 1 << 8`.
+  Replace with `1 << MetaEntryBase::BACKEND_LAYOUT_FIRST_FREE_BIT`.
+  (The plan previously cited the wrong filename `buddy.h` —
+  corrected.)
+- Grep `RED_BIT` and `1 << 8` / `<< 8` across `backend_helpers/`
+  to confirm no other site needs the same shift.
+
+### `src/snmalloc/mem/corealloc.h`
+
+- Line 1120-1121: replace
+  `size_t size = bits::one_at_bit(entry_sizeclass);`
+  with
+  `size_t size = sizeclass_full_to_size(entry.get_sizeclass());`
+  so the dealloc-large path reads the precise sizeclass-encoded
+  size instead of reconstructing it from a leading-zero count. This
+  is a no-op today (pow2 only); it makes Phase 15's behaviour change
+  land at a single accessor.
+- Grep `corealloc.h` for other `one_at_bit(` calls that derive
+  large-allocation size from an `as_large()` value and convert all
+  of them. (Known candidate: `corealloc.h:1576` — verify scope.)
+
+### `src/snmalloc/global/globalalloc.h` and other consumers
+
+- Grep for any other consumer of `as_large()` that interprets the
+  value as a leading-zero count. Convert each to
+  `sizeclass_full_to_size` or to the exp+mantissa accessor.
+- Audit any code that uses `sizeclass_t::raw()` directly assuming
+  the tag-bit-set-means-small invariant. The uniform encoding
+  changes the meaning of `raw()`.
+- Verified candidates from inspection: `globalalloc.h:145-220`
+  (`remaining_bytes`, `index_in_object`, `external_pointer`) — these
+  go through `start_of_object`/`slab_index`, so they pick up the
+  change automatically via `slab_mask`.
+
+## User-input size bounds (`MAX_LARGE_SIZECLASS_SIZE`)
+
+Before Phase 13, the largest representable large allocation was
+`1 << (address_bits - 1)` (half the address space, derived from
+`from_large_class` being a leading-zero-count mapping). The
+pre-existing bound check used `size > (size_t(1) << 63)` as a sloppy
+upper limit and let anything below through. With the exp+mantissa
+encoding, the largest representable size is the exact value of the
+top large class — sizes between that and `2^address_bits` no longer
+map to any valid sizeclass and must be rejected at the API boundary.
+
+Define a derived constant alongside the encoding:
+
+- `ENCODED_ADDRESS_BITS = bits::min(DefaultPal::address_bits, bits::BITS - 1)`.
+  Caps the encoding range one bit below the native word width so that
+  `from_exp_mant(NUM_SMALL + NUM_LARGE - 1) = 1 << ENCODED_ADDRESS_BITS`
+  does not overflow `size_t` on 32-bit (`address_bits == BITS == 32`).
+  On x86_64 (`address_bits = 48`) this is unchanged.
+- `NUM_LARGE_CLASSES = (ENCODED_ADDRESS_BITS - MAX_SMALL_SIZECLASS_BITS)
+  << INTERMEDIATE_BITS` (use `ENCODED_ADDRESS_BITS`, not `address_bits`).
+- `MAX_LARGE_SIZECLASS_SIZE = from_exp_mant<INTERMEDIATE_BITS,
+  MIN_ALLOC_STEP_BITS>(NUM_SMALL_SIZECLASSES + NUM_LARGE_CLASSES - 1)`.
+- Add `static_assert(MAX_LARGE_SIZECLASS_SIZE == bits::one_at_bit(
+  ENCODED_ADDRESS_BITS))` to pin the encoding invariant (a strict
+  nonzero check would not catch a wrong table-build mantissa offset).
+- Add `static_assert(ENCODED_ADDRESS_BITS > MAX_SMALL_SIZECLASS_BITS)`
+  so `NUM_LARGE_CLASSES > 0` is structural, not coincidental.
+
+Fan out the new bound to every site that accepts a user-supplied size
+and feeds it into the size→sizeclass lookup (these were either
+unguarded or had the loose `> 2^63` check):
+
+- `src/snmalloc/mem/corealloc.h` `alloc_not_small`: replace the
+  `1 << 63` bound with `MAX_LARGE_SIZECLASS_SIZE`.
+- `src/snmalloc/ds/sizeclasstable.h` `round_size`: same.
+- `src/snmalloc/global/globalalloc.h` `check_size`: early-return via
+  `snmalloc_check_client` when `size > MAX_LARGE_SIZECLASS_SIZE`.
+- `src/snmalloc/override/rust.cc` `rust_realloc`: gate the
+  equality-fast-path on both aligned sizes being
+  `<= MAX_LARGE_SIZECLASS_SIZE`.
+
+Add defensive `SNMALLOC_ASSERT`s in the large branch of
+`size_to_sizeclass_full`: `size != 0`, `size <=
+MAX_LARGE_SIZECLASS_SIZE`. These document the preconditions at the
+function whose behaviour is constrained by them ("document coupling at
+the point of breakage") and turn into noisy debug failures if a future
+caller path skips the bound check.
+
+## Test gates
+
+1. **Build**: clean build of the default config passes. The
+   `static_assert(Entry::is_backend_allowed_value(...))` checks at
+   `backend_arena_range.h:64-66` catch any bit-layout mismatch.
+2. **Full ctest suite**: all existing tests pass (no behaviour
+   regression — front-end still issues pow2 large requests, so
+   non-pow2 large sizeclasses exist in tables but are unreachable
+   from the API).
+3. **BackendArena unit tests** (`test_backend_arena`) continue to
+   pass — they exercise the shifted RED/variant bits in the pagemap
+   encoding.
+4. **Extend `src/test/func/sizeclass/sizeclass.cc`** with a
+   `uniform_large_sizeclasses` test case:
+   - For every large `sizeclass_t` index `lc ∈ [0, NUM_LARGE_CLASSES)`,
+     assert `sizeclass_full_to_size(from_large_class(lc))` is
+     strictly increasing in `lc`.
+   - For every pow2 size `S` in
+     `[MAX_SMALL_SIZECLASS_SIZE * 2, 2^(address_bits - 1)]`, assert
+     `sizeclass_full_to_size(size_to_sizeclass_full(S)) == S`
+     (round-trip identity on pow2 — still holds in Phase 13
+     because `size_to_sizeclass_full` for large still rounds to
+     next pow2).
+   - For every non-pow2 size `X` strictly between adjacent pow2
+     `[P, 2P)`, assert
+     `sizeclass_full_to_size(size_to_sizeclass_full(X)) == 2P`
+     (still pow2-rounded in Phase 13 — Phase 15 changes this).
+   - Sentinel sanity: `sizeclass_t{}.raw() == 0`;
+     `sizeclass_t{}.is_default()` is true;
+     `sizeclass_data_fast[0].size == 0`;
+     `sizeclass_data_fast[0].slab_mask == 0`;
+     `is_small(sizeclass_t{})` is false.
+   - Encoding sanity: `is_small(from_small_class(0))` is true;
+     `is_small(from_large_class(0))` is false; small range and
+     large range are disjoint and adjacent in the value space.
+5. **Extend `src/test/func/release-rounding/rounding.cc`** to
+   exercise non-trivial pow2 large sizeclasses. Today this test
+   covers small only. Add cases that exercise
+   `start_of_object` / `is_start_of_object` for the pow2 large
+   sizeclasses materialised end-to-end in Phase 13. (Phase 14
+   extends to the per-chunk offset; Phase 15 to non-pow2.)
+   (The plan previously cited `test/func/sizeclass/rounding.cc`,
+   which does not exist — corrected.)
+
+## Risks
+
+1. **SIZECLASS_BITS widening cascades.** Caught by the existing
+   `static_assert`s in `metadata.h:64-67` and
+   `backend_arena_range.h:64-66`.
+2. **Some embedder set REMOTE_MIN_ALIGN tighter than chain allows.**
+   Would surface as a compile-error on the cacheline-vs-REP_SIZE
+   max. Address only if it actually fires.
+3. **Stale `as_large()` callers.** Mitigation: grep + convert ALL
+   uses of `as_large()` in this phase. Phase 13 is not done until
+   the leading-zero-count semantics are retired.
+4. **Stale `raw()` callers assuming tag-bit semantics.** The
+   uniform encoding changes `raw()`'s meaning (no tag bit, shifted
+   by 1). Grep all callers and convert each to the appropriate
+   accessor (`as_small`, `as_large`, `is_small`, or — if it's a
+   `ModArray` index — leave alone, relying on the size-0 padding
+   slot at index 0 to make the no-subtract lookup return the right
+   sentinel values).
+5. **Adding the size-0 padding slot at index 0.** The padding slot
+   in `sizeclass_metadata` must have `size = 0` and `slab_mask = 0`
+   (and any other fields zero-initialised) so that
+   `sizeclass_full_to_size(sizeclass_t{}) == 0` and any accidental
+   slab-mask arithmetic on the sentinel returns 0 / a no-op. Verify
+   by reading every field in `sizeclass_data_fast` /
+   `sizeclass_data_slow`. Add a static-assert that index 0 has
+   `size == 0` after table init.
+
+## Out of scope
+
+- Per-chunk pagemap offset (Phase 14).
+- Non-pow2 reservations (Phase 15).
+- Changes to the small sizeclass encoding (other than dropping
+  the tag bit).
+- `round_size(size)` for large: still pow2 here; Phase 15 fixes.
+
+# Phase 14: Per-chunk pagemap offset (slab-granular)
+
+## Goal
+
+Add a per-chunk "slab offset within allocation" field to
+`FrontendMetaEntry`, written by a new `set_metaentry_large` path,
+and use it in `start_of_object` / `is_start_of_object` so that the
+start of a large allocation can be recovered from any address
+within it — independent of the allocation's alignment. This unlocks
+Phase 15.
+
+After Phase 14, the start-finding code uses the per-chunk offset
+for large allocations and continues to use `slab_mask` for small.
+With the front-end still issuing pow2 large requests (Phase 15
+changes that), every materialised large allocation has
+`info.align == size` so `slab_mask = size - 1` covers the whole
+allocation with offset always 0 — exactly today's behaviour.
+
+## Why now
+
+- Phase 15 introduces non-pow2 reservations. The existing
+  `addr & ~slab_mask` answer is wrong for non-pow2 sizes/alignments.
+- Per-chunk offset is the mechanism PLAN.md (lines 65-71) already
+  identified. Phase 14 implements that mechanism with offset = 0
+  semantics matching the existing pow2 path — so it can land
+  without changing observable behaviour.
+
+## Design
+
+### Slab granularity, not chunk granularity
+
+The offset records "which slab within the allocation does this
+chunk belong to", in units of the per-sizeclass `slab_size`. The
+recovery formula (matching PLAN.md lines 65-71) is:
+
+```
+start = (addr & ~slab_mask) - offset * slab_size
+```
+
+where `slab_size = info.align` (the natural alignment from
+`backend_arena_bins.h:741`, `info.align = size & (~size + 1)`,
+i.e. the lowest set bit of `size`), and `slab_mask = slab_size - 1`.
+Both are per-sizeclass, stored in `sizeclass_data_fast` as
+`slab_mask` (already there, value changes per Phase 13).
+
+**Offset width.** With `INTERMEDIATE_BITS = 2`, a large sizeclass
+of size `S = (4+M) * 2^(E-2)` for `M ∈ {0,1,2,3}` has:
+
+| M | size factor | info.align (lowest set bit) | slabs (size/align) |
+|---|-------------|------------------------------|---------------------|
+| 0 | 4           | 2^E (= size)                 | 1                   |
+| 1 | 5           | 2^(E-2)                      | 5                   |
+| 2 | 6           | 2^(E-1)                      | 3                   |
+| 3 | 7           | 2^(E-2)                      | 7                   |
+
+Worst case `2^(M+1) - 1` slabs (M = `INTERMEDIATE_BITS`): for M=2,
+the table above shows 7 slabs. Generalising: `OFFSET_BITS = M + 1`
+gives the needed `2^(M+1)` distinct values. A `static_assert` in
+`metadata.h` guards the bound:
+`static_assert((1 << OFFSET_BITS) > max_slabs_in_largest_class)`.
+
+(With natural alignment, the allocation incurs no address-space
+waste beyond what alignment already implies. With computed
+`OFFSET_BITS = INTERMEDIATE_BITS + 1`, we accept the extra
+`meta`-word bit consumption to keep allocations at natural
+alignment.)
+
+### Offset is a frontend concept (layering)
+
+Per user clarification: the offset is owned by the frontend (used
+to recover start-of-object from an interior pointer); the boundary
+bit is owned by the backend (used to mark PAL-allocation boundaries
+for the buddy allocator).
+
+Both bits happen to live in the `meta` word of the pagemap entry,
+but they are conceptually disjoint:
+
+- Offset accessors live on `FrontendMetaEntry`, not on
+  `MetaEntryBase`. The boundary bit machinery
+  (`MetaEntryBase::set_boundary`, `clear_boundary_bit`, `is_boundary`)
+  must not clobber offset bits — and currently doesn't, because
+  it only `|=` / `&= ~` the single boundary bit at position 0.
+- The frontend's `set_metaentry_large` packs offset into `meta`
+  and must preserve the boundary bit. **Key observation**:
+  `MetaEntryBase::operator=` at `metadata.h:162-169` *already*
+  preserves the target's boundary bit on assignment. So writing a
+  freshly-constructed `Entry t_i(meta, ras)` (with offset and
+  boundary both zero), calling `set_offset(slab_index)` on it (RMW
+  that touches only OFFSET bits — boundary on `t_i` is still 0),
+  then `concretePagemap.set(addr, t_i)` (which assigns via
+  `operator=`) leaves the pagemap entry's pre-existing boundary
+  bit intact. No manual boundary-preservation logic is needed.
+- `FrontendMetaEntry::get_slab_metadata()` (currently at
+  `metadata.h:739-740` masks `meta & ~META_BOUNDARY_BIT`) must
+  also mask the offset bits. The simplest way: extend the existing
+  mask constant. Define `META_FRONTEND_RESERVED_MASK =
+  META_BOUNDARY_BIT | (((1 << OFFSET_BITS) - 1) << OFFSET_SHIFT)`
+  and mask with that everywhere `get_slab_metadata` needs the
+  pointer.
+
+### Where the offset lives in the `meta` word
+
+Bits `1..OFFSET_BITS` of `meta` (with `OFFSET_SHIFT = 1`):
+
+- Bit 0: `META_BOUNDARY_BIT` (backend-owned).
+- Bits `1..OFFSET_BITS`: offset (frontend-owned, large-only).
+- Bits `(1 + OFFSET_BITS)..`: `SlabMetadata*` payload (natural
+  pointer alignment).
+
+This requires `alignof(SlabMetadata) >= (1 << (1 + OFFSET_BITS))`.
+For default `INTERMEDIATE_BITS=2`, `OFFSET_BITS=3`, the requirement
+is `alignof(SlabMetadata) >= 16`. Inspect `SlabMetadata` at the top
+of Phase 14; if alignment is insufficient, add
+`alignas(1 << (1 + OFFSET_BITS))` (= `alignas(16)` for default) to
+`SlabMetadata`. Cost: a few bytes of padding per slab metadata
+record — negligible.
+
+### Accessors
+
+Add to `FrontendMetaEntry`:
+
+- `static constexpr size_t OFFSET_BITS = INTERMEDIATE_BITS + 1;`
+  (derives from `INTERMEDIATE_BITS` because the worst-case slab
+  count for a non-pow2 large class with M mantissa bits is
+  `2^M + (2^M - 1) = 2^(M+1) - 1`. For default `INTERMEDIATE_BITS=2`
+  this gives `OFFSET_BITS = 3` (max offset 7, matching a worst case
+  of 7 slabs). For `INTERMEDIATE_BITS=3` (config option) it gives
+  `OFFSET_BITS = 4` (max offset 15, matching a worst case of 15
+  slabs).)
+- `static constexpr size_t OFFSET_SHIFT = 1;` (immediately above
+  the boundary bit)
+- `static constexpr address_t OFFSET_MASK =
+   ((1 << OFFSET_BITS) - 1) << OFFSET_SHIFT;`
+- `void set_offset(size_t slab_offset)`: read-modify-write of
+  `meta`, preserving boundary bit and `SlabMetadata*` payload.
+  Asserts `slab_offset < (1 << OFFSET_BITS)`.
+- `size_t get_offset() const`: reads `(meta & OFFSET_MASK) >>
+  OFFSET_SHIFT`.
+
+Update the existing pointer mask: define
+`META_FRONTEND_RESERVED_MASK = META_BOUNDARY_BIT | OFFSET_MASK`,
+update `get_slab_metadata()` to mask `meta & ~META_FRONTEND_RESERVED_MASK`.
+
+A `static_assert(alignof(SlabMetadata) >= (1 << (OFFSET_BITS +
+OFFSET_SHIFT)))` enforces the pointer-alignment requirement at
+compile time. For the default config this requires
+`alignof(SlabMetadata) >= 16`. Verify the current value and add
+`alignas(16)` (or computed `alignas(1 << (OFFSET_BITS+OFFSET_SHIFT))`)
+to `FrontendSlabMetadata` if needed.
+
+### `Pagemap::set_metaentry` (split into small vs large)
+
+The existing `set_metaentry` (writes uniform entries per chunk in
+a range) is a static member of `BasicPagemap` in
+`backend_helpers/pagemap.h:56-66`, which uses
+`concretePagemap.set(...)` to reach the underlying `FlatPagemap`.
+The new `set_metaentry_large` is added as a static member alongside
+it.
+
+`FrontendMetaEntry` deletes its copy constructor (`metadata.h:754`),
+so we cannot use `Entry t_i = t;` and modify per chunk. Instead,
+reconstruct each per-chunk entry from its components:
+
+```cpp
+// In BasicPagemap, alongside set_metaentry:
+static void set_metaentry_large(
+  address_t p,
+  size_t size,
+  size_t slab_size,
+  SlabMetadata* meta,
+  uintptr_t remote_and_sizeclass)
+{
+  // slab_size = info.align of this sizeclass.
+  // size      = total allocation size (== sizeclass-encoded size).
+  for (size_t chunk_offset = 0; chunk_offset < size;
+       chunk_offset += MIN_CHUNK_SIZE)
+  {
+    size_t slab_index = chunk_offset / slab_size;
+    Entry t_i(meta, remote_and_sizeclass);  // meta low bits = 0
+    t_i.set_offset(slab_index);             // RMW; touches only OFFSET bits
+    concretePagemap.set(p + chunk_offset, t_i);
+  }
+}
+```
+
+**Boundary-bit preservation**: `MetaEntryBase::operator=` at
+`metadata.h:162-169` already preserves the *target's* boundary bit
+when copy-assigning from `other`. `FlatPagemap::set` uses `=` to
+write entries. Therefore: the freshly-constructed `t_i` carries
+`boundary = 0`, but when it is assigned into the pagemap slot, the
+slot's pre-existing boundary bit (set earlier by the backend's
+`register_range`) is preserved by `operator=`. No manual
+boundary-preservation logic is needed in this loop.
+
+**Backend call site** (`backend.h:131-132`): dispatch on
+`sizeclass.is_small()`. Small path keeps existing
+`Pagemap::set_metaentry(p, size, t)`. Large path:
+`Pagemap::set_metaentry_large(p, size,
+                              sizeclass_data_fast(sc).slab_mask + 1,
+                              meta, ras);`
+where `meta` and `ras` are the `SlabMetadata*` and
+`remote_and_sizeclass` values currently passed to the `Entry t(meta,
+ras)` construction at `backend.h:131`.
+
+### `start_of_object` / `is_start_of_object`
+
+The current `start_of_object` lives in `sizeclasstable.h` with no
+Pagemap access. After Phase 14, the large case needs the per-chunk
+offset — which lives in the pagemap.
+
+Split the function: keep `sizeclasstable.h`'s `start_of_object` as
+the small-case implementation (rename internally to
+`start_of_object_small` if helpful), and add a Config-aware wrapper
+in `globalalloc.h` (or `mem/start_of_object.h`):
+
+```cpp
+template<typename Config>
+inline address_t start_of_object(address_t addr) {
+  // Use the existing public BackendAllocator accessor (see
+  // backend.h:197) instead of reaching for `Config::Backend::Pagemap`
+  // directly — `Pagemap` is a template parameter of `BackendAllocator`,
+  // not a publicly exposed nested type. The public
+  // `get_metaentry<bool potentially_out_of_range>(addr)` static
+  // wraps the Pagemap access.
+  auto& entry = Config::Backend::template get_metaentry<false>(addr);
+  auto sc = entry.get_sizeclass();
+  if (sc.is_small()) {
+    auto info = sizeclass_data_fast(sc);
+    return start_of_object_small(info, addr);
+  }
+  // Large: PLAN.md (65-71) recovery.
+  auto info = sizeclass_data_fast(sc);
+  size_t slab_size = info.slab_mask + 1;
+  return (addr & ~info.slab_mask) - entry.get_offset() * slab_size;
+}
+```
+
+### Consumers that MUST be rewritten in Phase 14
+
+Phase 14 is incomplete until every caller of the
+sizeclass-table-only `start_of_object` / `is_start_of_object` /
+`remaining_bytes` on a potentially-large pointer is moved to the
+Config-aware wrapper:
+
+- `globalalloc.h:137-144` (`remaining_bytes`): currently calls
+  `snmalloc::remaining_bytes(sizeclass, p)` which has no pagemap
+  offset access. Replace with the Config-aware path that consults
+  the pagemap entry for offset and computes
+  `start + sizeclass_full_to_size(sc) - addr`.
+- `globalalloc.h:145-220` (`index_in_object`, `external_pointer`):
+  similarly rewrite to consult the pagemap.
+- `corealloc.h` deallocation-sanity checks: `is_start_of_object`
+  is used in dealloc paths to assert the caller is passing a
+  valid base pointer. Grep `is_start_of_object` and `start_of_object`
+  across `corealloc.h` (verified candidates at
+  `corealloc.h:534-537` and `corealloc.h:1080-1083` per
+  rubber-duck review). Each call site that may receive a large
+  allocation's pointer must use the Config-aware variant. Without
+  this update, after Phase 15 a `dealloc` of a non-pow2 large
+  allocation could miss the start-of-object check entirely (every
+  natural-alignment slab boundary inside the allocation would
+  satisfy the old `slab_mask`-only check).
+- `bounds_checks.h` memcpy gate (line 99-103): calls
+  `remaining_bytes(...)`. Moves to the Config-aware version
+  transitively via the `globalalloc.h::remaining_bytes` rewrite.
+
+`is_start_of_object` analogue: for small, today's formula; for
+large, `(addr & info.slab_mask) == 0 && entry.get_offset() == 0`.
+
+`slab_index` for large: irrelevant — large allocations are a single
+"object" of size `sizeclass_full_to_size(sc)`, not a slab of
+multiple. Existing callers gated by `sc.is_small()` already avoid
+calling `slab_index` for large.
+
+### Backend changes
+
+- `backend.h:131-132`: at the `set_metaentry` call site after a
+  large `alloc_chunk`, dispatch on small vs large as above. Phase
+  14 keeps `alloc_chunk`'s `bits::is_pow2(size)` assertion (Phase
+  15 relaxes it). This is fine: today only pow2 large allocations
+  reach this site, so `slab_size == size` and offset is always 0.
+- `backend.h:169` (dealloc): writes backend-claim entries via the
+  backend Rep's word setters; those don't touch frontend bits.
+  No change.
+
+## Test gates
+
+1. **Build**: clean build passes.
+2. **Full ctest suite**: all existing tests pass. Front-end still
+   issues pow2 large requests, so for every materialised large
+   allocation `info.align == size` and offset is always 0 — the
+   new `set_metaentry_large` path produces the same `get_slab_metadata()`
+   answer as before. Existing `start_of_object` answers (via
+   `slab_mask`) match the new offset-based answers for pow2-aligned
+   allocations.
+3. **`src/test/func/release-rounding/rounding.cc`** continues to
+   pass — small path unchanged; large path uses offset = 0 always.
+4. **Extend `src/test/func/memory/memory.cc`** with a
+   `large_alloc_pointer_recovery` test (public-API path):
+   - Allocate several large sizes via the public API. For each
+     allocation `p` of requested size `S_req`, the actual reservation
+     in Phase 14 is `S_res = bits::next_pow2(S_req)` (front-end is
+     still pow2-only). For each:
+     - For every chunk offset `k * MIN_CHUNK_SIZE` for
+       `k = 0..S_res/MIN_CHUNK_SIZE - 1`, assert
+       `Pagemap::get_metaentry(p + k * MIN_CHUNK_SIZE).get_offset()
+       == 0` (since the reservation is pow2 and `slab_size ==
+       reservation_size` for pow2 large classes, all chunks live in
+       the single slab and have offset 0).
+     - For every interior address `q = p + j` with `j ∈ {0, 1,
+       S_res/2, S_res-1}`, assert `start_of_object<Config>(q) == p`.
+5. **New test or extension** to exercise the non-zero offset write
+   path directly (Phase 14 is otherwise un-tested with non-zero
+   offsets, because the front-end is still pow2-only). Two options:
+   - (a) Add an internal-API test in
+     `src/test/func/large_offset/large_offset.cc` (or extend
+     `memory.cc`) that calls `BasicPagemap::set_metaentry_large`
+     directly on a freshly-allocated chunk-multiple range with a
+     synthetic non-pow2 sizeclass (one already populated in the
+     table in Phase 13). Then verify:
+     - `get_metaentry(p + k * MIN_CHUNK_SIZE).get_offset() == k *
+       MIN_CHUNK_SIZE / slab_size` for each chunk.
+     - `start_of_object<Config>(p + interior_addr) == p` for a
+       sample of interior addresses across all slabs.
+   - (b) Defer non-zero offset coverage to Phase 15 explicitly and
+     accept that Phase 14's gate is "no regressions on
+     pow2-allocation paths".
+   The plan picks (a) — Phase 14 must be independently testable.
+6. **Boundary-bit-preservation test**: in an existing test that
+   exercises PAL-allocation boundaries (or a new minimal one), set
+   the boundary bit on a chunk via the backend path, then call
+   `set_offset(3)` on the frontend side, then read both — both
+   round-trip without clobbering each other.
+
+## Risks
+
+1. **`alignof(SlabMetadata)` insufficient.** Required alignment is
+   `1 << (1 + OFFSET_BITS)` — 16 bytes for default config. If
+   inspection shows alignment is smaller (likely 8 today), add
+   `alignas(1 << (1 + OFFSET_BITS))`. Caught at compile time by the
+   new `static_assert`.
+2. **`get_slab_metadata` mask update missed somewhere.** Grep for
+   `META_BOUNDARY_BIT` and `meta &` to find every site that
+   masks the meta word for a pointer. Convert each to the new
+   `META_FRONTEND_RESERVED_MASK`.
+3. **Offset-bit positions overlap with backend bits when the entry
+   is backend-claimed.** Not a real risk: when the backend writes
+   its claim, the entry's `meta` is owned by the backend Rep
+   (different layout). Frontend reads `get_offset()` only on
+   frontend-claimed entries.
+4. **Boundary bit not preserved during `set_offset`.** Mitigation:
+   implement `set_offset` as RMW preserving all bits except the
+   offset field. Test case: set boundary, set offset, read offset,
+   read boundary — both round-trip.
+
+## Out of scope
+
+- Front-end requesting non-pow2 large sizes (Phase 15).
+- Per-chunk offset for small allocations (small uses slab_mask
+  recovery, no per-chunk offset needed).
+- Multi-byte offset (`OFFSET_BITS = INTERMEDIATE_BITS + 1` bits,
+  fits cleanly in `meta` low bits).
+
+# Phase 15: Front-end requests non-pow2 large allocations
+
+## Goal
+
+Flip the front-end so that large allocations request exactly the
+sizeclass-encoded size (chunk-multiple, exp+mantissa-rounded),
+instead of always the next power of two. This is the long-running
+goal of the refactor: the backend (`BackendArenaRange`) has
+supported arbitrary chunk-multiple sizes since Phase 10–12, the
+sizeclass encoding has supported non-pow2 large since Phase 13,
+and the per-chunk offset machinery has supported pointer recovery
+since Phase 14.
+
+## Changes
+
+### `src/snmalloc/ds/sizeclasstable.h`
+
+- `large_size_to_chunk_size(size)`: replace
+  `bits::next_pow2(size)` with the rounded sizeclass-derived size:
+  `sizeclass_full_to_size(size_to_sizeclass_full(size))`. Now
+  rounds to exp+mantissa boundaries (matching Phase 13 encoding).
+- `round_size(size)` for large (lines 478-501): currently returns
+  `bits::next_pow2(size)`. Update to match `large_size_to_chunk_size`:
+  `return sizeclass_full_to_size(size_to_sizeclass_full(size));`
+  This is critical because `DefaultConts::success` in
+  `corealloc.h:34-47` uses `round_size` to determine the zeroing
+  range for `calloc`. Without this update, `calloc` would zero
+  beyond the actual reservation. The two functions converge to
+  the same value now that the front-end's chunk-size request
+  matches the round-size.
+- Update the comments on both functions to describe the new
+  rounding behaviour (no "next pow2"; "exp+mantissa rounded").
+
+### `src/snmalloc/backend/backend.h`
+
+- `alloc_chunk` (line 89-95):
+  `SNMALLOC_ASSERT(bits::is_pow2(size))` → relaxed to
+  `SNMALLOC_ASSERT((size & (MIN_CHUNK_SIZE - 1)) == 0)`.
+  (Already permissible per Phase 14; tighten only if Phase 14
+  did not relax it.)
+- `meta_size = bits::next_pow2(sizeof(SlabMetadata) + extra_bytes);`
+  unchanged — that's metadata-array size, not allocation size.
+
+### `src/snmalloc/mem/corealloc.h`
+
+- Verify line 1576 (and any other `next_pow2(round_sizeof)` site)
+  — read context and update to match the new rounding scheme if
+  it's on the large-allocation path.
+- The dealloc-large path was already migrated in Phase 13 to
+  `sizeclass_full_to_size(entry.get_sizeclass())` — no further
+  change needed.
+- The front-end large-alloc path (corealloc.h:703-727) uses
+  `large_size_to_chunk_size` — automatically picks up the new
+  behaviour.
+
+### `src/snmalloc/mem/smallbuddyrange.h:232`
+
+- `auto rsize = bits::next_pow2(size);` inside
+  `alloc_range_with_leftover` is used only by the meta-data range
+  (and arguably the small object path). Read context to determine
+  scope. Likely no change in Phase 15; Phase 15 only touches large
+  object allocations. If a change is required, include it here;
+  if not, document the decision.
+
+## Test gates
+
+1. **Build**: clean build passes.
+2. **Full ctest suite**: all existing tests pass. Existing tests
+   that exercise large allocations now allocate chunk-multiples,
+   not pow2 sizes. Reservation footprint shrinks; functional
+   results are unchanged.
+3. **Extend `src/test/func/memcpy/func-memcpy.cc`** with a
+   non-pow2 large case:
+   - For sizes `S` strictly between adjacent pow2 (e.g. `S =
+     1.5 * MAX_SMALL_SIZECLASS_SIZE`), call `malloc(S)`. Verify:
+     - `memcpy(p + sizeclass_full_to_size(sc) - 1, src, 1)` succeeds.
+     - `memcpy(p + sizeclass_full_to_size(sc), src, 1)` traps (in
+       the bounds-checking variant).
+     - **Prerequisite**: Phase 14 must have already replaced
+       `globalalloc.h::remaining_bytes` with the Config-aware
+       pagemap-offset path. Without that prerequisite, this test
+       does not exercise the offset path. (Verify by inspection:
+       confirm the new `remaining_bytes` consults
+       `entry.get_offset()`, not just `start_of_object_small`.)
+4. **Extend existing `test/func/memory/memory.cc`** with a
+   non-pow2 pointer-recovery case (mirroring the Phase 14 test but
+   on front-end-issued non-pow2 allocations):
+   - For sizes `S` strictly between adjacent pow2 in the large
+     range, call `malloc(S)`, save `p`. Compute
+     `S_rounded = sizeclass_full_to_size(size_to_sizeclass_full(S))`.
+   - For every interior address `q = p + j` with `j ∈ {0, 1,
+     MIN_CHUNK_SIZE, S_rounded / 2, S_rounded - 1}`, assert
+     `external_pointer<Start>(q) == p`.
+   - Assert `is_start_of_object(p)` is true; `is_start_of_object(p
+     + 1)` is false; `is_start_of_object(p + MIN_CHUNK_SIZE)` is
+     false (every interior chunk has offset != 0).
+   - Assert reservation footprint matches `S_rounded /
+     MIN_CHUNK_SIZE` chunks (NOT `next_pow2(S) / MIN_CHUNK_SIZE`).
+5. **Extend `src/test/func/release-rounding/rounding.cc`** to cover
+   non-pow2 large sizeclasses now that they're materialised
+   end-to-end.
+6. **Existing memory-stress tests** (e.g. `external_pointer.cc`)
+   continue to pass.
+
+## Risks
+
+1. **Existing tests assume pow2 reservation footprint.** Grep tests
+   for `next_pow2`, `pow2`, and any size-arithmetic over allocations
+   returned from `malloc`. Likely small handful; convert each to
+   `sizeclass_full_to_size` or to a less assumption-laden check.
+2. **`calloc` zeroing range.** Mitigated by updating `round_size`
+   for large (item above). Verify by inspecting
+   `corealloc.h:34-47` (`DefaultConts::success`) — it should now
+   zero exactly the reservation size.
+3. **`SlabMetadata` reuse boundary.** The current
+   `slab_metadata == &slab_metadata` assertion in `dealloc_chunk`
+   relies on every chunk in the allocation pointing to the same
+   `SlabMetadata`. Phase 14's per-chunk-offset path keeps the
+   `meta` field's pointer bits unchanged across chunks (only
+   offset differs), so the assertion continues to hold after the
+   Phase 14 mask update. Verify by re-reading the assertion site.
+4. **`remaining_bytes` overflow for very large allocations.**
+   After Phase 15, the rounded size can be just below the next
+   pow2, which is still bounded by `2^MAX_address_bits` — no
+   arithmetic overflow. Verify with a max-size allocation test.
+5. **Performance.** Front-end alloc path: `next_pow2` is replaced
+   by an exp+mantissa table lookup. Dealloc-large already moved
+   to a table lookup in Phase 13. Net neutral.
+
+## Out of scope
+
+- Reducing `INTERMEDIATE_BITS` to gain bits in the sizeclass tag
+  (Phase 13 already chose 2 = the existing value).
+- Generalising small allocations (already exp+mantissa).
+- Any change to `alloc_range` / `dealloc_range` of arbitrary
+  byte-multiples — front-end always rounds via the sizeclass
+  encoding.
+
+# Review plan for Phases 13–15
+
+Per claude.md "Mandatory review checkpoints":
+
+1. After this plan is written (now), run the rubber-duck review
+   pass on Phases 13–15 — read the plan + existing
+   `sizeclasstable.h`, `metadata.h`, `corealloc.h`,
+   `backend.h`, and confirm:
+   - Assumptions about bit availability in `FrontendMetaEntry`
+     (especially `alignof(SlabMetadata)`) are correct.
+   - No phase has a hidden cross-phase dependency that breaks the
+     "each phase ends with passing tests" invariant.
+   - The SIZECLASS_BITS widening doesn't break MetaEntry encoding.
+   - Tests proposed for each phase actually gate the right
+     invariants.
+2. Address findings; present revised plan for explicit user
+   approval before any code changes.
+3. After implementation of each phase, run the build/test subagent
+   per `.github/skills/building_and_testing.md`.
+4. After all three phases land, pre-PR review (mandatory checkpoint).
