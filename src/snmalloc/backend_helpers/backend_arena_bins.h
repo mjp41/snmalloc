@@ -47,7 +47,7 @@ namespace snmalloc
   {
     static_assert(
       INTERMEDIATE_BITS >= 1 && INTERMEDIATE_BITS <= 3,
-      "BackendArenaBins currently supports B in {1, 2, 3}");
+      "BackendArenaBins supports B in {1, 2, 3}");
     static_assert(
       MIN_SIZE_BITS + INTERMEDIATE_BITS < bits::BITS,
       "MIN_SIZE_BITS + INTERMEDIATE_BITS must leave room for at least one "

@@ -206,7 +206,7 @@ namespace snmalloc
     // assertion — this catches the buddy.h:90-93 unsafe-probe pattern
     // (calling can_consolidate before confirming the address is in
     // our region) in BackendArena unit tests rather than as a runtime
-    // segfault in production builds.
+    // segfault in release builds.
     static bool can_consolidate(uintptr_t addr)
     {
       return !mock_store[mock_index(addr)].boundary;
@@ -1438,7 +1438,7 @@ namespace snmalloc
   // tree-membership tests gate the can_consolidate read. MockRep's
   // can_consolidate now dereferences mock_store via mock_index, which
   // asserts on out-of-range indices, so an unguarded probe in
-  // add_block trips here rather than only as a segfault in production
+  // add_block trips here rather than only as a segfault in release
   // builds.
   static void test_block_at_arena_top_edge()
   {
