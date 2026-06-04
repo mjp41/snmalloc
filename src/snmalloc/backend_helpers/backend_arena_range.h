@@ -73,6 +73,15 @@ namespace snmalloc
     static_assert(BIN_META_MASK < UNIT_SIZE);
     static_assert(
       Entry::is_backend_allowed_value(Entry::Word::One, BIN_META_MASK));
+    static_assert(
+      Entry::is_backend_allowed_value(
+        Entry::Word::Two, ~uintptr_t(UNIT_SIZE - 1)),
+      "RangeRep stores chunk-aligned addresses in Word::Two; the "
+      "markerless ownership discriminator requires their low "
+      "BACKEND_RESERVED_MASK_WORD_TWO bits to be zero. This asserts "
+      "that the reserved mask fits entirely below the chunk alignment, "
+      "so no chunk-aligned value (any bit set only at position "
+      ">= MIN_SIZE_BITS) can collide.");
 
     using Word = typename Entry::Word;
     using Handle = typename Entry::BackendStateWordRef;
