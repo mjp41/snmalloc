@@ -149,7 +149,7 @@ namespace snmalloc
     void unlink_block(uintptr_t addr, size_t size)
     {
       auto range = typename Bins::range_t{addr, size};
-      size_t bin = bitmap.add(range);
+      size_t bin = Bins::bin_index(range);
       bin_trees[bin].remove_elem(addr);
       if (size >= TWO_UNITS)
         range_tree.remove_elem(addr);
