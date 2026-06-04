@@ -3651,53 +3651,50 @@ listed so reviewers can re-check):
 
 ### `src/snmalloc/ds/sizeclasstable.h`
 
-- `size_to_sizeclass_full(size)` (line 679): large branch currently
-  does `to_exp_mant(next_pow2(size))`. Drop the `next_pow2` step
-  and call `to_exp_mant(size)` directly. The encoding's ceil
-  semantic means a request of `S` lands in the smallest sizeclass
-  whose size is `>= S`.
-- `large_size_to_chunk_size(size)` (line 598): replace
-  `bits::next_pow2(size)` with the rounded sizeclass-derived size:
-  `sizeclass_full_to_size(size_to_sizeclass_full(size))`. With the
-  change above this collapses to one table lookup.
-- `round_size(size)` (line 693): the large branch currently returns
-  `bits::next_pow2(size)`. Update to match
-  `large_size_to_chunk_size`:
-  `return sizeclass_full_to_size(size_to_sizeclass_full(size));`.
-  This is correctness-critical because `DefaultConts::success` in
+- `size_to_sizeclass_full(size)`: large branch calls
+  `to_exp_mant<INTERMEDIATE_BITS, MIN_ALLOC_STEP_BITS>(size)`
+  directly. The encoding's ceil semantic selects the smallest
+  sizeclass whose size is `>= size`.
+- `large_size_to_chunk_size` is removed. After the change above it
+  would just be `sizeclass_full_to_size(size_to_sizeclass_full(size))`,
+  which is exactly what `round_size` returns on the large branch; the
+  one in-tree caller (`corealloc.h` large path) is hoisted to use
+  `sizeclass_full_to_size(sc)` directly with a single `sc` lookup, so
+  the wrapper carries no remaining work.
+- `round_size(size)`: large branch returns
+  `sizeclass_full_to_size(size_to_sizeclass_full(size))`. This is
+  correctness-critical because `DefaultConts::success` in
   `corealloc.h:34-47` uses `round_size` to determine the zeroing
-  range for `calloc`. Without this update, `calloc` would zero
-  beyond the actual reservation.
-- Update the doc-comments on `size_to_sizeclass_full` and
-  `round_size` to drop the "rounded up to the next power of two"
-  language; describe the exp+mantissa rounding instead.
+  range for `calloc`. Without it `calloc` would zero beyond the
+  actual reservation.
+- `compute_max_large_slab_index` tightens its bound to
+  `meta.size / slab_size - 1` (the actual worst case the runtime
+  loop writes). The previous `next_pow2(meta.size) / slab_size - 1`
+  overestimates now that no caller reserves `next_pow2(size)`.
+- Doc-comments on `size_to_sizeclass_full` and `round_size` describe
+  the exp+mantissa rounding.
 
 ### `src/snmalloc/backend/backend.h`
 
-- `alloc_chunk` precondition (line 95): currently
-  `SNMALLOC_ASSERT(bits::is_pow2(size))`. Replace with the
-  slab-tile invariant:
+- `alloc_chunk` precondition: the slab-tile invariant
   ```
   const size_t slab_size = sizeclass_full_to_slab_size(sizeclass);
   SNMALLOC_ASSERT(size >= slab_size);
   SNMALLOC_ASSERT((size & (slab_size - 1)) == 0);
   ```
-  These match the pagemap loop's stride exactly and are the
-  minimum required for the per-chunk write to terminate at `size`.
-  The existing `size >= slab_size` assert on line 136 becomes
-  redundant once the precondition asserts it; consolidate.
-- The Phase 14 offset-bits-zero assert on `ras` (lines 140-141)
-  stays — front-end still uses `encode(remote, sc)` with default
-  offset.
-- Comment on lines 132-135 ("`size` and `slab_size` are powers of
-  two") is invalidated by Phase 15; rewrite to "`size` is a
-  multiple of `slab_size` with `size >= slab_size`".
+  matches the pagemap loop's stride exactly and is the minimum
+  required for the per-chunk write to terminate at `size`. The
+  previous duplicate `size >= slab_size` assert inside the loop is
+  consolidated.
+- The offset-bits-zero assert on `ras` stays — the front-end uses
+  `encode(remote, sc)` with default offset 0.
+- Loop comment describes `size` as a multiple of `slab_size` with
+  `size >= slab_size`.
 
 ### `src/snmalloc/global/globalalloc.h`
 
-No change in Phase 15. The runtime sized-dealloc check is correct
-after Phase 15 because every legitimate caller pre-applies
-`aligned_size`:
+No change. The runtime sized-dealloc check is correct because every
+legitimate caller pre-applies `aligned_size`:
 
 - Unaligned `sized_dealloc(p, S)`: alloc was `malloc(S)`, which goes
   through `size_to_sizeclass_full(S)`; the dealloc check evaluates
