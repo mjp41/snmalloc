@@ -3475,6 +3475,112 @@ disassemble the new `__malloc_start_pointer` to confirm the load
 count matches baseline (one 8-byte load of the pagemap byte, no
 `meta` word load, no `imul`).
 
+# Pre-Phase-15: compile-time aligned dealloc overload
+
+## Goal
+
+Fix a pre-existing latent bug in the compile-time templated alloc /
+dealloc API. This is independent of Phase 15 and is committed as a
+sibling commit before Phase 15 begins.
+
+## The bug
+
+`globalalloc.h:341-356` `alloc<size, Conts, align>` applies
+`aligned_size(align, size)` internally:
+```
+constexpr size_t sz = aligned_size(align, size);
+… alloc(sz);
+```
+
+`globalalloc.h:394-399` `dealloc<size>(p)` does not — it passes the
+raw `size` to `check_size`:
+```
+template<size_t size>
+SNMALLOC_FAST_PATH_INLINE void dealloc(void* p)
+{
+  check_size(p, size);
+  …
+}
+```
+
+When the alignment-driven upgrade pushes the alloc into a different
+sizeclass than `size` itself, `check_size` fires. Concretely today
+(pre-Phase-15), with `S = 33 KiB`, `A = 128 KiB`:
+
+- `alloc<33 KiB, Uninit, 128 KiB>()` → `aligned_size(128 KiB, 33 KiB)
+  = 128 KiB` → pagemap `sc(128 KiB)`.
+- `dealloc<33 KiB>(p)` → `check_size(p, 33 KiB)` →
+  `size_to_sizeclass_full(33 KiB) = sc(40 KiB)` (sc(64 KiB) once
+  Phase 15 lands).
+- Mismatch — `check_size` fires under `mitigations(sanity_checks)`.
+  Verified on `main` with a manual reproducer:
+  `Dealloc rounded size mismatch: 0xa000 != 0x20000`.
+
+The bug exists in `main` today; it does not require Phase 15. Phase
+15 lowers the threshold (more (A, S) pairs cross a sizeclass
+boundary) but does not introduce the asymmetry.
+
+## Fix
+
+Merge `dealloc<size>` into a single template with `align` defaulted
+to 1, so the same body handles both calling forms:
+```
+template<size_t size, size_t align = 1>
+SNMALLOC_FAST_PATH_INLINE void dealloc(void* p)
+{
+  constexpr size_t sz = aligned_size(align, size);
+  check_size(p, sz);
+  ThreadAlloc::get().dealloc<ThreadAlloc::CheckInit>(p);
+}
+```
+`aligned_size(1, size) == size` for all `size`, so existing
+single-argument `dealloc<size>(p)` callers are bit-equivalent to
+their previous behaviour.
+
+To make `aligned_size` reachable from the test library header (which
+deliberately avoids pulling in the full runtime sizeclass tables),
+move its definition from `sizeclasstable.h` to `sizeclassstatic.h`.
+The function is a pure compile-time-friendly utility — it depends
+only on `is_small_sizeclass`, `bits::is_pow2`, and the SNMALLOC_*
+macros, all of which are already available in `sizeclassstatic.h`.
+Consumers of `aligned_size` previously included via `sizeclasstable.h`
+still pick it up transitively through the existing include chain
+(`pal.h` → `ds_core.h` → `sizeclassstatic.h`).
+
+Apply the same merge in the test library:
+- `template<size_t size, size_t align = 1> void dealloc(void* p)`
+  replaces the previous `template<size_t size>` testlib overload.
+- `template<size_t size, ZeroMem, size_t align = 1> void* alloc()`
+  replaces the previous two-parameter testlib `alloc`. The body
+  computes `sz = aligned_size(align, size)` and routes to the
+  small/large path based on `sz`.
+
+## Test
+
+`src/test/func/aligned_dealloc/aligned_dealloc.cc`, listed in
+`TESTLIB_ONLY_TESTS` so it is compiled once and linked against both
+testlib flavours.
+
+- Includes `test/snmalloc_testlib.h` only — exercises the public
+  templated `alloc<size, ZeroMem, align>` / `dealloc<size, align>`
+  surface through the testlib layering.
+- The canonical reproducer `(S = 33 KiB, A = 128 KiB)` fires the bug
+  on `main` under the `check` flavour. Confirmed by hand before the
+  fix.
+- Additional `(S, A)` pairs cover a small-to-large alignment upgrade,
+  a wider gap, the `align == size` baseline, and a small natural
+  alignment case.
+
+## Gate
+
+1. Build clean.
+2. New test passes under both `fast` and `check`.
+3. Full ctest suite green.
+4. Pre-commit review loop.
+5. Commit approval.
+
+After this commit lands, Phase 15 begins on top of it.
+
 # Phase 15: Front-end requests non-pow2 large allocations
 
 ## Goal
@@ -3488,130 +3594,367 @@ sizeclass encoding has supported non-pow2 large since Phase 13,
 and the per-chunk offset machinery has supported pointer recovery
 since Phase 14.
 
+Effect: a request for e.g. 70 KiB on the default config
+(`INTERMEDIATE_BITS = 2`) currently reserves 128 KiB (next pow2);
+after Phase 15 it reserves 80 KiB (the next exp+mantissa class,
+saving ~37.5%). A request for 96 KiB + 1 byte currently reserves
+128 KiB; after Phase 15 it reserves 112 KiB. Sizes that already
+land on a class boundary (e.g. 80 KiB, 96 KiB) reserve exactly
+their requested size where today they reserve the next pow2. Net
+effect across workloads is a reduction of large-allocation
+footprint up to ~33% for sizes that fall mid-exponent.
+
+## Why now
+
+Phase 14 added the per-chunk offset write in `Backend::alloc_chunk`,
+the three-table sizeclass metadata split (`start_` / `align_` /
+`slab_`), and the offset==0 fast-path branch in `start_of_object`.
+All of this is dormant on the front-end today because
+`large_size_to_chunk_size(size) = next_pow2(size)` means every
+materialised large allocation has `offset = 0` in every chunk. The
+Phase 14 `large_offset` test reaches the per-chunk path via the
+public *backend* API to confirm the dormant code is correct; Phase
+15 is what makes the front-end actually exercise it.
+
+## Pre-flight verification
+
+Before implementing, confirm these Phase 14 facts (all true today —
+listed so reviewers can re-check):
+
+- `bits::to_exp_mant<INTERMEDIATE_BITS, MIN_ALLOC_STEP_BITS>(v)`
+  ceil-encodes (`v = v - 1; …`), so passing the raw size (not
+  `next_pow2(size)`) maps to the smallest enclosing sizeclass.
+- `Backend::alloc_chunk` currently asserts
+  `bits::is_pow2(size)`. The Phase 14 pagemap loop advances by
+  `slab_size = sizeclass_full_to_slab_size(sizeclass)`, so the
+  correct precondition is `size >= slab_size` *and*
+  `(size & (slab_size - 1)) == 0`. Both already hold by
+  construction for front-end calls because
+  `size = sizeclass_full_to_size(sc)` and `slab_size = size & -size`
+  is the largest pow2 divisor of `size`; the loop terminates
+  exactly at `size`. We will tighten/relax the assert to match.
+- The Phase 14 assert that `ras`'s offset bits are zero on entry
+  to `alloc_chunk` continues to hold: front-end calls
+  `PagemapEntry::encode(remote, sc)` with default `offset = 0`.
+- `BackendArenaBins::carve` returns a base aligned to
+  `info.align = size & -size` (the largest pow2 divisor of size,
+  set in the bin-table ctor at `backend_arena_bins.h:742`). For a
+  96 KiB request that is 32 KiB = `slab_size` =
+  `sizeclass_full_to_slab_size(sc)` — exactly what
+  `start_of_object`'s `addr & ~slab_mask` requires.
+- `globalalloc::remaining_bytes` / `index_in_object` already route
+  through `entry.get_offset_and_sizeclass()` (committed in Phase
+  14's API cleanup), so they will pick up non-zero offsets
+  automatically once the front-end produces them.
+
 ## Changes
 
 ### `src/snmalloc/ds/sizeclasstable.h`
 
-- `large_size_to_chunk_size(size)`: replace
+- `size_to_sizeclass_full(size)` (line 679): large branch currently
+  does `to_exp_mant(next_pow2(size))`. Drop the `next_pow2` step
+  and call `to_exp_mant(size)` directly. The encoding's ceil
+  semantic means a request of `S` lands in the smallest sizeclass
+  whose size is `>= S`.
+- `large_size_to_chunk_size(size)` (line 598): replace
   `bits::next_pow2(size)` with the rounded sizeclass-derived size:
-  `sizeclass_full_to_size(size_to_sizeclass_full(size))`. Now
-  rounds to exp+mantissa boundaries (matching Phase 13 encoding).
-- `round_size(size)` for large (lines 478-501): currently returns
-  `bits::next_pow2(size)`. Update to match `large_size_to_chunk_size`:
-  `return sizeclass_full_to_size(size_to_sizeclass_full(size));`
-  This is critical because `DefaultConts::success` in
+  `sizeclass_full_to_size(size_to_sizeclass_full(size))`. With the
+  change above this collapses to one table lookup.
+- `round_size(size)` (line 693): the large branch currently returns
+  `bits::next_pow2(size)`. Update to match
+  `large_size_to_chunk_size`:
+  `return sizeclass_full_to_size(size_to_sizeclass_full(size));`.
+  This is correctness-critical because `DefaultConts::success` in
   `corealloc.h:34-47` uses `round_size` to determine the zeroing
   range for `calloc`. Without this update, `calloc` would zero
-  beyond the actual reservation. The two functions converge to
-  the same value now that the front-end's chunk-size request
-  matches the round-size.
-- Update the comments on both functions to describe the new
-  rounding behaviour (no "next pow2"; "exp+mantissa rounded").
+  beyond the actual reservation.
+- Update the doc-comments on `size_to_sizeclass_full` and
+  `round_size` to drop the "rounded up to the next power of two"
+  language; describe the exp+mantissa rounding instead.
 
 ### `src/snmalloc/backend/backend.h`
 
-- `alloc_chunk` (line 89-95):
-  `SNMALLOC_ASSERT(bits::is_pow2(size))` → relaxed to
-  `SNMALLOC_ASSERT((size & (MIN_CHUNK_SIZE - 1)) == 0)`.
-  (Already permissible per Phase 14; tighten only if Phase 14
-  did not relax it.)
-- `meta_size = bits::next_pow2(sizeof(SlabMetadata) + extra_bytes);`
-  unchanged — that's metadata-array size, not allocation size.
+- `alloc_chunk` precondition (line 95): currently
+  `SNMALLOC_ASSERT(bits::is_pow2(size))`. Replace with the
+  slab-tile invariant:
+  ```
+  const size_t slab_size = sizeclass_full_to_slab_size(sizeclass);
+  SNMALLOC_ASSERT(size >= slab_size);
+  SNMALLOC_ASSERT((size & (slab_size - 1)) == 0);
+  ```
+  These match the pagemap loop's stride exactly and are the
+  minimum required for the per-chunk write to terminate at `size`.
+  The existing `size >= slab_size` assert on line 136 becomes
+  redundant once the precondition asserts it; consolidate.
+- The Phase 14 offset-bits-zero assert on `ras` (lines 140-141)
+  stays — front-end still uses `encode(remote, sc)` with default
+  offset.
+- Comment on lines 132-135 ("`size` and `slab_size` are powers of
+  two") is invalidated by Phase 15; rewrite to "`size` is a
+  multiple of `slab_size` with `size >= slab_size`".
+
+### `src/snmalloc/global/globalalloc.h`
+
+No change in Phase 15. The runtime sized-dealloc check is correct
+after Phase 15 because every legitimate caller pre-applies
+`aligned_size`:
+
+- Unaligned `sized_dealloc(p, S)`: alloc was `malloc(S)`, which goes
+  through `size_to_sizeclass_full(S)`; the dealloc check evaluates
+  the same function on the same `S`. Same sizeclass.
+- Aligned `sized_dealloc(p, S, A)` (line 401): computes
+  `aligned_size(A, S)` *before* calling `check_size`.
+- `rust.cc:33` and `rust.cc:51`: both apply `aligned_size` before
+  the 2-arg `dealloc(ptr, size)` path.
+- `jemalloc_compat::sdallocx`: ignores the size argument.
+
+A 2-arg `sized_dealloc(p, S)` after `aligned_alloc(A, S)` with
+`aligned_size(A, S) > S` would mismatch — but that is a client bug:
+the client should use the 3-arg form for aligned allocations.
+
+The compile-time `alloc<size, Conts, align>` / `dealloc<size>`
+asymmetry is being fixed in the **pre-Phase-15 sibling commit**
+(see the "Pre-Phase-15: compile-time aligned dealloc overload"
+section below). Phase 15 does not touch `globalalloc.h`.
 
 ### `src/snmalloc/mem/corealloc.h`
 
-- Verify line 1576 (and any other `next_pow2(round_sizeof)` site)
-  — read context and update to match the new rounding scheme if
-  it's on the large-allocation path.
-- The dealloc-large path was already migrated in Phase 13 to
-  `sizeclass_full_to_size(entry.get_sizeclass())` — no further
-  change needed.
-- The front-end large-alloc path (corealloc.h:703-727) uses
-  `large_size_to_chunk_size` — automatically picks up the new
-  behaviour.
+- Large-alloc handler at lines 723-728 currently invokes
+  `size_to_sizeclass_full(size)` three times and
+  `large_size_to_chunk_size(size)` once. Hoist into locals so the
+  table lookups happen once:
+  ```
+  const auto sc        = size_to_sizeclass_full(size);
+  const size_t chunk_sz = sizeclass_full_to_size(sc);
+  auto [chunk, meta] = Config::Backend::alloc_chunk(
+    self->get_backend_local_state(),
+    chunk_sz,
+    PagemapEntry::encode(self->public_state(), sc),
+    sc);
+  ```
+  - Phase 15 still leaves the large path through the same handler;
+    the hoist removes duplicated work on the large-allocation path
+    rather than changing any small-allocation hot loop.
 
-### `src/snmalloc/mem/smallbuddyrange.h:232`
+### `src/snmalloc/backend_helpers/smallbuddyrange.h:232` and similar
 
-- `auto rsize = bits::next_pow2(size);` inside
-  `alloc_range_with_leftover` is used only by the meta-data range
-  (and arguably the small object path). Read context to determine
-  scope. Likely no change in Phase 15; Phase 15 only touches large
-  object allocations. If a change is required, include it here;
-  if not, document the decision.
+- `alloc_range_with_leftover` uses `bits::next_pow2(size)` to size
+  its parent request. This range serves the *meta-data* allocator,
+  not the user object range — meta_size is always pow2 (line 203
+  of `backend.h` already calls `next_pow2(sizeof(SlabMetadata) +
+  extra_bytes)`). No change needed; verify by inspection that the
+  call site is not on the user-large path and note the conclusion
+  in the commit.
+
+### Tests
+
+- The existing `src/test/func/large_offset/large_offset.cc` test
+  exercises the per-chunk path via the *backend* API. Phase 15
+  flips the *front-end* to do the same. The test's header
+  comment (lines 5-9) currently says "currently only issues pow2
+  large requests" and that `alloc_chunk` "asserts pow2"; both
+  become false after Phase 15. Update the comment to describe
+  this test as the *low-level* / *backend-API* counterpart of the
+  new front-end test.
+
+- Add a sibling test `src/test/func/large_offset_frontend/` that
+  exercises a *bounded* set of representative large sizeclasses
+  (smallest non-pow2 large class, two mid-range classes spanning
+  different exponents, one near `MAX_LARGE_SIZECLASS_SIZE` only if
+  the total allocation is well under the available test-time
+  address budget — cap at a few MiB per allocation). For each
+  selected sizeclass `sc` where
+  `sizeclass_full_to_size(sc) != sizeclass_full_to_slab_size(sc)`:
+  - Call `malloc(sizeclass_full_to_size(sc))`, save `p`. Assert
+    `is_start_of_object<Start>(p)`.
+  - For every chunk offset `j * MIN_CHUNK_SIZE` with
+    `j ∈ [1, size_full / MIN_CHUNK_SIZE)`, assert
+    `external_pointer<Start>(p + j * MIN_CHUNK_SIZE) == p` and
+    `remaining_bytes(p + j * MIN_CHUNK_SIZE) == size_full - j *
+    MIN_CHUNK_SIZE`.
+  - Assert `malloc_usable_size(p) == size_full` (the new actual
+    reservation, not `next_pow2(size_full)`).
+  - Free, then re-allocate and confirm address re-use behaves
+    sanely.
+  - Also allocate a *non-boundary* request between adjacent class
+    sizes (e.g. `malloc(size_full - 1)` for a non-pow2 class,
+    `malloc(prev_class + 1)`) and assert `malloc_usable_size(p)`
+    equals `size_full` — this is what proves the raw request maps
+    to the smallest enclosing class.
+  - Pure table-level properties (every large sizeclass round-trips
+    through `size_to_sizeclass_full` ∘ `sizeclass_full_to_size`)
+    can be checked without allocating; loop over the full large
+    range there.
+
+- `src/test/func/sizeclass/sizeclass.cc` lines 160-175 currently
+  assert that a non-pow2 large size strictly between adjacent
+  pow2 rounds to the next pow2. Phase 15 changes this: a non-pow2
+  size now rounds to the next exp+mantissa class. Compute the
+  expected value independently of the function under test — scan
+  the representable large classes (e.g. iterate sizeclasses 0 ..
+  `NUM_LARGE_CLASSES`) and pick the smallest `sizeclass_full_to_size(sc) >= mid`.
+  Then assert `size_to_sizeclass_full(mid)` equals that sizeclass
+  and `sizeclass_full_to_size(size_to_sizeclass_full(mid))` equals
+  the independently-computed class size. Update the comment
+  ("pow2 rounding still in force") accordingly. The surrounding
+  `b == ENCODED_ADDRESS_BITS` bound logic stays.
+
+  **Add a deterministic `round_size` regression gate alongside.**
+  For each representable large sizeclass `sc` with size `S =
+  sizeclass_full_to_size(sc)`, and `S_prev` the previous class
+  size, assert:
+  - `round_size(S) == S`
+  - `round_size(S_prev + 1) == S` (i.e. the request is rounded
+    to the smallest enclosing class, not blown up to the next
+    pow2).
+  - `large_size_to_chunk_size(S_prev + 1) == round_size(S_prev + 1)`
+    (the chunk-size and round-size views agree).
+
+  This is the primary `round_size` gate. If `round_size` is left
+  as `next_pow2`, these assertions fail deterministically — unlike
+  the calloc zeroing smoke test below, which may not fault when
+  `memset` overruns into backend free range.
+
+- `src/test/func/release-rounding/rounding.cc` lines 86-127
+  exercise pow2 large sizes end-to-end via
+  `index_in_object`/`is_start_of_object`. Phase 15 does not
+  change behaviour for pow2 sizes (they still round to themselves),
+  so this loop continues to pass unchanged. Optionally extend
+  the loop with a non-pow2 case (e.g. `mid = S + (S >> 2)`) to
+  exercise the new front-end-materialised non-pow2 classes.
+
+- `src/test/func/malloc/malloc.cc:82-87` uses
+  `natural_alignment(size)` symbolically. Because
+  `natural_alignment` derives from `round_size`, the test
+  auto-tracks Phase 15: a 96 KiB alloc now reports 32 KiB
+  alignment (today: 128 KiB). No code change in the test, but
+  cross-check that no test elsewhere hard-codes "pow2 large
+  alignment".
+
+- `src/test/func/statistics/` (and any other test asserting
+  per-sizeclass alloc counts): verify the assertion model does
+  not assume pow2 large counts. Inspection-only first; update
+  only if tests fail.
+
+- **Calloc zeroing correctness smoke test.** The existing calloc
+  tests (`memory.cc::test_calloc_16M`, `test_calloc` loop in
+  `malloc.cc`) mostly use sizes that round to a pow2 reservation
+  even today, so they would not catch `round_size` being left as
+  `next_pow2` after Phase 15. Add a test in
+  `src/test/func/memory/memory.cc` that calls `calloc(1, S)` for
+  a non-pow2 large class size `S` and asserts
+  `malloc_usable_size(p) == S` and that every byte in `[p, p + S)`
+  is zero. This is a smoke test only — the deterministic gate for
+  the `round_size` regression lives in `sizeclass.cc` (above)
+  because a `memset` overshoot into backend free range may not
+  fault and would not be caught by zeroing the visible range.
 
 ## Test gates
 
-1. **Build**: clean build passes.
-2. **Full ctest suite**: all existing tests pass. Existing tests
-   that exercise large allocations now allocate chunk-multiples,
-   not pow2 sizes. Reservation footprint shrinks; functional
-   results are unchanged.
-3. **Extend `src/test/func/memcpy/func-memcpy.cc`** with a
-   non-pow2 large case:
-   - For sizes `S` strictly between adjacent pow2 (e.g. `S =
-     1.5 * MAX_SMALL_SIZECLASS_SIZE`), call `malloc(S)`. Verify:
-     - `memcpy(p + sizeclass_full_to_size(sc) - 1, src, 1)` succeeds.
-     - `memcpy(p + sizeclass_full_to_size(sc), src, 1)` traps (in
-       the bounds-checking variant).
-     - **Prerequisite**: Phase 14 must have already replaced
-       `globalalloc.h::remaining_bytes` with the Config-aware
-       pagemap-offset path. Without that prerequisite, this test
-       does not exercise the offset path. (Verify by inspection:
-       confirm the new `remaining_bytes` consults
-       `entry.get_offset()`, not just `start_of_object_small`.)
-4. **Extend existing `test/func/memory/memory.cc`** with a
-   non-pow2 pointer-recovery case (mirroring the Phase 14 test but
-   on front-end-issued non-pow2 allocations):
-   - For sizes `S` strictly between adjacent pow2 in the large
-     range, call `malloc(S)`, save `p`. Compute
-     `S_rounded = sizeclass_full_to_size(size_to_sizeclass_full(S))`.
-   - For every interior address `q = p + j` with `j ∈ {0, 1,
-     MIN_CHUNK_SIZE, S_rounded / 2, S_rounded - 1}`, assert
-     `external_pointer<Start>(q) == p`.
-   - Assert `is_start_of_object(p)` is true; `is_start_of_object(p
-     + 1)` is false; `is_start_of_object(p + MIN_CHUNK_SIZE)` is
-     false (every interior chunk has offset != 0).
-   - Assert reservation footprint matches `S_rounded /
-     MIN_CHUNK_SIZE` chunks (NOT `next_pow2(S) / MIN_CHUNK_SIZE`).
-5. **Extend `src/test/func/release-rounding/rounding.cc`** to cover
-   non-pow2 large sizeclasses now that they're materialised
-   end-to-end.
-6. **Existing memory-stress tests** (e.g. `external_pointer.cc`)
-   continue to pass.
+1. **Build**: clean build passes. The `static_assert` chain from
+   Phase 14 is unchanged — `compute_max_large_slab_index` in
+   `sizeclasstable.h:419-437` still uses
+   `bits::next_pow2_const(meta.size)`, which is *conservative*
+   under Phase 15 (the front-end now reserves at most that much,
+   often less), so the budget bound continues to hold.
+2. **Full ctest suite**: all 88 existing tests pass after
+   expectation updates in `sizeclass.cc`. Tests exercising large
+   allocations now allocate exp+mantissa-rounded chunk sizes;
+   reservation footprint shrinks; functional results unchanged.
+3. **New `large_offset_frontend` test** passes — per-chunk offsets
+   are now produced by the front-end and recovered by
+   `external_pointer` / `remaining_bytes`.
+4. **`perf-external_pointer-fast`**: median within noise of the
+   Phase 14 baseline (~290 ms on the dev machine). The hot path
+   for small allocations is unchanged; the only change in
+   instruction count comes from `__malloc_start_pointer` for
+   non-pow2 large allocations, which now exercises the slow arm of
+   the `offset == 0` branch added in Phase 14 — but only for
+   genuinely non-pow2 allocations, of which the benchmark has
+   none.
+5. **`perf-singlethread-check`**: within noise.
+6. **Memory footprint**: a synthetic benchmark allocating
+   `malloc(96 KiB)` × N reports peak RSS lower by ~25% vs the
+   pre-Phase-15 baseline. (Optional diagnostic; not a gate.)
 
 ## Risks
 
-1. **Existing tests assume pow2 reservation footprint.** Grep tests
-   for `next_pow2`, `pow2`, and any size-arithmetic over allocations
-   returned from `malloc`. Likely small handful; convert each to
-   `sizeclass_full_to_size` or to a less assumption-laden check.
-2. **`calloc` zeroing range.** Mitigated by updating `round_size`
-   for large (item above). Verify by inspecting
-   `corealloc.h:34-47` (`DefaultConts::success`) — it should now
-   zero exactly the reservation size.
-3. **`SlabMetadata` reuse boundary.** The current
-   `slab_metadata == &slab_metadata` assertion in `dealloc_chunk`
-   relies on every chunk in the allocation pointing to the same
-   `SlabMetadata`. Phase 14's per-chunk-offset path keeps the
-   `meta` field's pointer bits unchanged across chunks (only
-   offset differs), so the assertion continues to hold after the
-   Phase 14 mask update. Verify by re-reading the assertion site.
-4. **`remaining_bytes` overflow for very large allocations.**
-   After Phase 15, the rounded size can be just below the next
-   pow2, which is still bounded by `2^MAX_address_bits` — no
-   arithmetic overflow. Verify with a max-size allocation test.
-5. **Performance.** Front-end alloc path: `next_pow2` is replaced
-   by an exp+mantissa table lookup. Dealloc-large already moved
-   to a table lookup in Phase 13. Net neutral.
+1. **`calloc` zeroing range overshoot**. Mitigated by updating
+   `round_size` for large. Verify by inspecting
+   `corealloc.h:34-47` (`DefaultConts::success`) — must zero
+   exactly the reservation size returned by `round_size`. The new
+   non-pow2 calloc test in `memory.cc` is the regression gate.
+2. **External clients assuming pow2-aligned large allocations.**
+   `natural_alignment` automatically reports the reduced
+   alignment, but any external code that hard-codes "large allocs
+   are pow2-aligned" silently breaks. Document in the commit
+   message; consider a release note if there is a CHANGELOG.
+3. **`aligned_alloc` overflow at extreme sizes.** `aligned_size`
+   already handles SIZE_MAX overflow; behaviour unchanged.
+4. **Performance regression on the front-end alloc path.**
+   `next_pow2(size)` is replaced by `to_exp_mant(size)` plus a
+   table lookup. Both are constant-time and small; perf gate
+   confirms no regression.
+5. **External pagemap / fixed-region builds.** The fixed-region
+   tests (`src/test/func/fixed_region/`,
+   `src/test/func/external_pagemap/`) construct allocations via
+   different paths. Re-run them in the full suite.
+6. **Statistics counters.** `func-statistics` checks per-sizeclass
+   counts. Verify the test doesn't hard-code "every large is
+   pow2".
 
 ## Out of scope
 
 - Reducing `INTERMEDIATE_BITS` to gain bits in the sizeclass tag
-  (Phase 13 already chose 2 = the existing value).
+  (Phase 13 chose the existing value).
 - Generalising small allocations (already exp+mantissa).
 - Any change to `alloc_range` / `dealloc_range` of arbitrary
   byte-multiples — front-end always rounds via the sizeclass
-  encoding.
+  encoding before reaching the backend.
+- Removing the offset==0 fast-path branch in `start_of_object`.
+  After Phase 15 the slow arm is reachable from the front-end, but
+  the branch is fully predicted on small-allocation workloads
+  (which dominate the benchmark) and the slow arm's cost is small.
+
+## Implementation order (every step has a test gate)
+
+1. **Front-end flip + `alloc_chunk` precondition + frontend test
+   in a single commit.** This is one atomic refactor: the
+   precondition cannot be relaxed safely until the front-end has
+   reasons to call with non-pow2 sizes, and the front-end flip
+   cannot be exercised end-to-end without the precondition
+   relaxation. Files touched in this commit:
+   - `src/snmalloc/ds/sizeclasstable.h`: drop `next_pow2` from
+     `size_to_sizeclass_full`; rewrite `large_size_to_chunk_size`
+     and `round_size` per the "Changes" section; update doc
+     comments.
+   - `src/snmalloc/backend/backend.h`: replace
+     `alloc_chunk`'s `is_pow2(size)` precondition with the
+     slab-tile invariant; rewrite the surrounding comment.
+   - `src/snmalloc/mem/corealloc.h`: hoist the duplicated
+     `size_to_sizeclass_full(size)` / `large_size_to_chunk_size`
+     calls in the large-alloc path (lines 723-728) into locals.
+   - `src/test/func/large_offset_frontend/`: new test (the
+     gate). Covers per-chunk pagemap recovery and non-boundary
+     requests.
+   - `src/test/func/large_offset/large_offset.cc`: update header
+     comment now that the backend-API and front-end exercise the
+     same path.
+   - `src/test/func/sizeclass/sizeclass.cc`: update the
+     non-pow2-rounds-to-next-pow2 expectation at lines 160-175.
+   - `src/test/func/memory/memory.cc`: add non-pow2-large calloc
+     test (the `round_size` regression gate).
+   Gate: full ctest suite passes including
+   `large_offset_frontend` and the new calloc test.
+
+2. **Perf gate** (per the perf-gate protocol from Phase 14):
+   measure `perf-external_pointer-fast` and
+   `perf-singlethread-check` against the Phase-14 baseline (~290
+   ms / ~580 ms median); 5 runs × 3 reps each; report median +
+   range. If a regression is found, root-cause via perf annotate
+   before committing — do not paper over with workarounds.
+
+3. **Mandatory pre-commit review loop** before the commit.
 
 # Review plan for Phases 13–15
 

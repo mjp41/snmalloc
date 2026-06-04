@@ -548,6 +548,7 @@ if(NOT SNMALLOC_HEADER_ONLY_LIBRARY)
   # These are mitigation-independent and can be compiled once, then linked
   # against both fast and check testlib variants.
   set(TESTLIB_ONLY_TESTS
+    aligned_dealloc
     backend_arena
     backend_arena_bins
     backend_arena_range
