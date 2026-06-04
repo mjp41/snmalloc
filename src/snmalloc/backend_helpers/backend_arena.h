@@ -125,11 +125,10 @@ namespace snmalloc
       return {0, 0};
     }
 
-    bool contains_min(uintptr_t a) const
+    bool contains_min(uintptr_t a)
     {
-      auto& self = const_cast<BackendArena&>(*this);
-      auto path = self.bin_trees[0].get_root_path();
-      return self.bin_trees[0].find(path, a) &&
+      auto path = bin_trees[0].get_root_path();
+      return bin_trees[0].find(path, a) &&
         Rep::get_variant(a) == BackendArenaVariant::Min;
     }
 
@@ -213,8 +212,7 @@ namespace snmalloc
       // only known to exist after a tree lookup confirms succ_addr is in
       // our region — succ_addr can be one past the registered range when
       // the input block ends at the high edge of the arena. Order the
-      // checks so the tree check gates the pagemap read (matching the
-      // pattern in buddy.h:90-93).
+      // checks so the tree check gates the pagemap read.
       auto [sa, ss] = range_from_addr(s_key);
       uintptr_t succ_addr = addr + size;
       if (sa == succ_addr && Rep::can_consolidate(succ_addr))
@@ -290,25 +288,39 @@ namespace snmalloc
     }
 
     /**
-     * Five-clause structural invariant. Runs when `enabled` is true;
-     * defaults to `Debug` so in-tree callers compile away in Release
-     * while tests can opt in by passing `true` explicitly. Uses
-     * `SNMALLOC_CHECK` rather than `SNMALLOC_ASSERT` so that
-     * test-driven invocations are checked even under NDEBUG.
+     * Structural invariant. Runs when `enabled` is true; defaults to
+     * `Debug` so in-tree callers compile away in Release while tests
+     * can opt in by passing `true` explicitly. Uses `SNMALLOC_CHECK`
+     * rather than `SNMALLOC_ASSERT` so that test-driven invocations
+     * are checked even under NDEBUG.
+     *
+     * Five clauses are verified:
+     *  1. Maximally consolidated — no adjacent free blocks could be
+     *     merged: (a) no two non-min range-tree entries touch across
+     *     a consolidatable boundary, (b) no non-min entry touches a
+     *     min entry, (c) no two min entries are adjacent.
+     *  2. Cross-tree consistency — every range-tree entry appears in
+     *     exactly one bin tree, and every non-min bin-tree entry
+     *     appears in the range tree.
+     *  3. Bin classification — every bin-tree entry sits in the bin
+     *     its size selects.
+     *  4. Bitmap consistency — the non-empty bin bit is set iff the
+     *     corresponding bin tree has entries.
+     *  5. Variant-tag consistency — each entry's pagemap variant tag
+     *     matches the tag implied by its address and size, and Large
+     *     variant entries carry the correct stored size.
      */
-    void check_invariant(bool enabled = Debug) const
+    void check_invariant(bool enabled = Debug)
     {
       if (!enabled)
         return;
-      auto& self = const_cast<BackendArena&>(*this);
 
-      // Clause 1: Maximally consolidated.
       // 1a. No two adjacent non-min blocks (unless boundary prevents merge).
       {
         uintptr_t prev_addr = 0;
         size_t prev_size = 0;
         bool prev_valid = false;
-        self.range_tree.for_each([&](uintptr_t node) {
+        range_tree.for_each([&](uintptr_t node) {
           auto [a, s] = range_from_addr(node);
           if (prev_valid)
           {
@@ -322,7 +334,7 @@ namespace snmalloc
       }
 
       // 1b. No non-min block adjacent to a min block (unless boundary).
-      self.range_tree.for_each([&](uintptr_t node) {
+      range_tree.for_each([&](uintptr_t node) {
         auto [a, s] = range_from_addr(node);
         if (a >= UNIT_SIZE)
           SNMALLOC_CHECK(
@@ -335,7 +347,7 @@ namespace snmalloc
       {
         uintptr_t prev = 0;
         bool prev_valid = false;
-        self.bin_trees[0].for_each([&](uintptr_t node) {
+        bin_trees[0].for_each([&](uintptr_t node) {
           if (Rep::get_variant(node) != BackendArenaVariant::Min)
             return;
           if (prev_valid)
@@ -346,43 +358,40 @@ namespace snmalloc
         });
       }
 
-      // Clause 2: Cross-tree consistency.
-      // Every non-min bin-tree entry must be in the range tree;
-      // every range-tree entry must be in exactly one bin tree.
+      // 2. Cross-tree consistency.
       {
         size_t range_tree_count = 0;
         size_t bin_tree_nonmin_count = 0;
 
         for (size_t bin = 0; bin < Bins::Bitmap::TOTAL_BINS; bin++)
         {
-        self.bin_trees[bin].for_each([&](uintptr_t node) {
+        bin_trees[bin].for_each([&](uintptr_t node) {
           auto [a, s] = range_from_addr(node);
           if (s >= TWO_UNITS)
           {
-            auto path = self.range_tree.get_root_path();
-            SNMALLOC_CHECK(self.range_tree.find(path, node));
+            auto path = range_tree.get_root_path();
+            SNMALLOC_CHECK(range_tree.find(path, node));
             bin_tree_nonmin_count++;
           }
         });
         }
 
-        // Reverse: every range-tree entry must be in its expected bin tree.
-        self.range_tree.for_each([&](uintptr_t node) {
+        range_tree.for_each([&](uintptr_t node) {
           range_tree_count++;
           auto [a, s] = range_from_addr(node);
           auto range = typename Bins::range_t{a, s};
           size_t expected_bin = Bins::bin_index(range);
-          auto path = self.bin_trees[expected_bin].get_root_path();
-          SNMALLOC_CHECK(self.bin_trees[expected_bin].find(path, node));
+          auto path = bin_trees[expected_bin].get_root_path();
+          SNMALLOC_CHECK(bin_trees[expected_bin].find(path, node));
         });
 
         SNMALLOC_CHECK(bin_tree_nonmin_count == range_tree_count);
       }
 
-      // Clause 3: Bin classification correctness.
+      // 3. Bin classification correctness.
       for (size_t bin = 0; bin < Bins::Bitmap::TOTAL_BINS; bin++)
       {
-        self.bin_trees[bin].for_each([&](uintptr_t node) {
+        bin_trees[bin].for_each([&](uintptr_t node) {
           auto [a, s] = range_from_addr(node);
           auto range = typename Bins::range_t{a, s};
           size_t expected_bin = Bins::bin_index(range);
@@ -390,18 +399,18 @@ namespace snmalloc
         });
       }
 
-      // Clause 4: Bitmap consistency.
+      // 4. Bitmap consistency.
       for (size_t bin = 0; bin < Bins::Bitmap::TOTAL_BINS; bin++)
       {
-        bool has_entries = !self.bin_trees[bin].is_empty();
+        bool has_entries = !bin_trees[bin].is_empty();
         bool bit_set = bitmap.test(bin);
         SNMALLOC_CHECK(has_entries == bit_set);
       }
 
-      // Clause 5: Variant-tag consistency.
+      // 5. Variant-tag consistency.
       for (size_t bin = 0; bin < Bins::Bitmap::TOTAL_BINS; bin++)
       {
-        self.bin_trees[bin].for_each([&](uintptr_t node) {
+        bin_trees[bin].for_each([&](uintptr_t node) {
           auto v = Rep::get_variant(node);
           auto [a, s] = range_from_addr(node);
           SNMALLOC_CHECK(v == variant_of(s, a));

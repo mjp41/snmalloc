@@ -168,10 +168,15 @@ namespace snmalloc
     /**
      * Explicit assignment operator, copies the data preserving the boundary bit
      * in the target if it is set.
+     *
+     * Load-bearing: the pagemap writes back through this operator (its
+     * `set(p, t)` is `body[p >> SHIFT] = t`), so the boundary bit set
+     * once at OS-range registration survives every subsequent metadata
+     * mutation — including chunk reuse via `dealloc_chunk` — without
+     * any consolidation path having to touch it explicitly.
      */
     MetaEntryBase& operator=(const MetaEntryBase& other)
     {
-      // Don't overwrite the boundary bit with the other's
       meta = (other.meta & ~META_BOUNDARY_BIT) |
         address_cast(meta & META_BOUNDARY_BIT);
       remote_and_sizeclass = other.remote_and_sizeclass;
@@ -329,11 +334,14 @@ namespace snmalloc
       {}
 
       /**
-       * Single-pointer constructor for sentinel storage that the back
-       * end never writes through (e.g. red-black tree concept-check
-       * null/root nodes — see `largebuddyrange.h`). Reserved mask is
-       * 0, so the `operator=` assertion is vacuous; safety relies on
-       * the sentinels being `static const`, making any write UB.
+       * Single-pointer constructor required by the `RBRepMethods`
+       * concept, which constructs a Handle from `&Rep::root` to
+       * verify sentinel constructibility (see
+       * `ds_core/redblacktree.h`). Reserved mask is zero, which is
+       * safe because `Rep::root` is a `static const` sentinel that
+       * the red-black tree never assigns through — any write would
+       * trap on the const data — and on read the underlying value is
+       * zero so `get()` returns zero regardless of the mask.
        */
       constexpr BackendStateWordRef(uintptr_t* v) : val(v) {}
 

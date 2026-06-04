@@ -255,7 +255,7 @@ namespace snmalloc
         }
         else
         {
-          SNMALLOC_CHECK(false && "Global range overflow should not happen");
+          SNMALLOC_CHECK_MSG(false, "Global range overflow should not happen");
         }
       }
 
@@ -302,12 +302,12 @@ namespace snmalloc
         auto refill_size = bits::max(needed_size, REFILL_SIZE);
         while (needed_size <= refill_size)
         {
-          auto refill = parent.alloc_range(refill_size);
+          auto refill_range = parent.alloc_range(refill_size);
 
-          if (refill != nullptr)
+          if (refill_range != nullptr)
           {
             requested_total += refill_size;
-            add_range(refill, refill_size);
+            add_range(refill_range, refill_size);
 
             SNMALLOC_ASSERT(refill_size < bits::one_at_bit(MAX_SIZE_BITS));
             static_assert(

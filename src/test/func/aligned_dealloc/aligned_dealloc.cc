@@ -21,7 +21,7 @@
 #include "test/setup.h"
 
 #include <iostream>
-#include <test/snmalloc_testlib.h>
+#include "test/snmalloc_testlib.h"
 
 using namespace snmalloc;
 

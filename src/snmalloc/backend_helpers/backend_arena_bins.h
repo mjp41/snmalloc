@@ -806,8 +806,8 @@ namespace snmalloc
             // evaluation non-constant and surfaces the violation as
             // a compile error.
             if (discrim_set == 0)
-              SNMALLOC_CHECK(
-                false && "bin_subsets violates strict-chain invariant");
+              SNMALLOC_CHECK_MSG(
+                false, "bin_subsets violates strict-chain invariant");
             cascade_steps[m_top][i].m_test = bits::ctz_const(discrim_set);
             cascade_steps[m_top][i].bin = b;
           }

@@ -30,7 +30,7 @@
 
 #include <iostream>
 #include <snmalloc/snmalloc.h>
-#include <test/setup.h>
+#include "test/setup.h"
 
 #ifdef assert
 #  undef assert
