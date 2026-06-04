@@ -113,7 +113,13 @@ namespace snmalloc
         case BackendArenaVariant::OddTwo:
           return {a, TWO_UNITS};
         case BackendArenaVariant::Large:
-          return {a, Rep::get_large_size(a)};
+        {
+          size_t s = Rep::get_large_size(a);
+          SNMALLOC_ASSERT(
+            s > TWO_UNITS && s < bits::one_at_bit(MAX_SIZE_BITS) &&
+            bits::align_down(s, UNIT_SIZE) == s);
+          return {a, s};
+        }
       }
       SNMALLOC_ASSERT(false);
       return {0, 0};

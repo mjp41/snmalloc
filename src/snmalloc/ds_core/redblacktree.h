@@ -797,7 +797,13 @@ namespace snmalloc
      * root-to-leaf descent then records both neighbours: every left
      * turn (parent key > value) updates the successor candidate to the
      * parent's key, every right turn updates the predecessor candidate.
-     * In Debug an assert fires if `value` is encountered on the descent.
+     * `SNMALLOC_CHECK` aborts in any build if `value` is encountered
+     * on the descent: a duplicate key would make `neighbours` return
+     * an arbitrary neighbour pair that the caller would consume as
+     * valid, corrupting dependent state. The check uses only one
+     * post-descent comparison because a duplicate key is always
+     * recorded into `pred` on the right-going branch (`compare(k,
+     * value)` is false when `k == value`).
      */
     stl::Pair<K, K> neighbours(K value)
     {
@@ -808,7 +814,6 @@ namespace snmalloc
       while (!cur.is_null())
       {
         K k = cur;
-        SNMALLOC_ASSERT(!Rep::equal(k, value));
         if (Rep::compare(k, value))
         {
           // k > value: go left; k is the tightest successor seen so far.
@@ -821,6 +826,8 @@ namespace snmalloc
           cur = get_dir(false, k);
         }
       }
+
+      SNMALLOC_CHECK(!Rep::equal(pred, value));
 
       return {pred, succ};
     }
