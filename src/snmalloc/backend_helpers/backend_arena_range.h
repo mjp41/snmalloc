@@ -333,12 +333,24 @@ namespace snmalloc
 
       constexpr Type() = default;
 
+      /**
+       * `size` exceeds the arena's representable range and must be
+       * routed to the parent (or refused if no parent exists). Matches
+       * `BackendArena::add_block`'s `size < bits::one_at_bit(MAX_SIZE_BITS)`
+       * precondition exactly, so alloc and dealloc bypass on the same
+       * boundary.
+       */
+      static constexpr bool is_too_large(size_t size)
+      {
+        return size >= bits::one_at_bit(MAX_SIZE_BITS);
+      }
+
       capptr::Arena<void> alloc_range(size_t size)
       {
         SNMALLOC_ASSERT(size >= MIN_CHUNK_SIZE);
         SNMALLOC_ASSERT((size & (MIN_CHUNK_SIZE - 1)) == 0);
 
-        if (size >= bits::mask_bits(MAX_SIZE_BITS))
+        if (is_too_large(size))
         {
           if (ParentRange::Aligned)
             return parent.alloc_range(size);
@@ -363,7 +375,7 @@ namespace snmalloc
 
         if constexpr (MAX_SIZE_BITS != (bits::BITS - 1))
         {
-          if (size >= bits::mask_bits(MAX_SIZE_BITS))
+          if (is_too_large(size))
           {
             parent_dealloc(base.unsafe_uintptr(), size);
             return;
