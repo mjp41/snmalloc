@@ -551,6 +551,7 @@ if(NOT SNMALLOC_HEADER_ONLY_LIBRARY)
     aligned_dealloc
     backend_arena
     backend_arena_bins
+    backend_arena_inplace
     backend_arena_range
     bits first_operation memory memory_usage multi_atexit multi_threadatexit
     redblack statistics teardown
