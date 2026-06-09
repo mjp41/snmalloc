@@ -62,6 +62,12 @@ namespace snmalloc
     ObjectRange object_range;
 
   public:
+    /// Granularity of the local meta range. Backend rounds metadata
+    /// allocation sizes up to this; replaces pow2 rounding.
+    static constexpr size_t MIN_META_ALIGN = ObjectRange::UNIT_SIZE;
+    static_assert(
+      bits::is_pow2(MIN_META_ALIGN), "MIN_META_ALIGN must be a power of two");
+
     // Expose a global range for the initial allocation of meta-data.
     using GlobalMetaRange = Pipe<ObjectRange, GlobalRange>;
 

@@ -112,6 +112,12 @@ namespace snmalloc
     MetaRange meta_range;
 
   public:
+    /// Granularity of the local meta range. Backend rounds metadata
+    /// allocation sizes up to this; replaces pow2 rounding.
+    static constexpr size_t MIN_META_ALIGN = MetaRange::UNIT_SIZE;
+    static_assert(
+      bits::is_pow2(MIN_META_ALIGN), "MIN_META_ALIGN must be a power of two");
+
     using Stats = StatsCombiner<CentralObjectRange, CentralMetaRange>;
 
     ObjectRange* get_object_range()
