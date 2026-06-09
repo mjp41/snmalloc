@@ -112,7 +112,7 @@ namespace snmalloc
   public:
     /**
      * First bit on Word::One available for backend layouts; the bits
-     * below are frontend-reserved. Backends in `backend_arena_range.h`
+     * below are frontend-reserved. Backends in `largearenarange.h`
      * derive `RED_BIT`, `VARIANT_SHIFT`, etc. from this.
      */
     static constexpr size_t BACKEND_LAYOUT_FIRST_FREE_BIT = 1;

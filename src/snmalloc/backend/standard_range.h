@@ -30,7 +30,7 @@ namespace snmalloc
     // Global range of memory, expose this so can be filled by init.
     using GlobalR = Pipe<
       Base,
-      BackendArenaRange<
+      LargeArenaRange<
         GlobalCacheSizeBits,
         bits::BITS - 1,
         Pagemap,
@@ -46,11 +46,11 @@ namespace snmalloc
       bits::next_pow2_bits_const(PAL::page_size);
 
   public:
-    // Source for object allocations and metadata
-    // Use buddy allocators to cache locally.
+    // Source for object allocations and metadata; thread-local cache
+    // for chunk-sized ranges.
     using LargeObjectRange = Pipe<
       Stats,
-      StaticConditionalRange<BackendArenaRange<
+      StaticConditionalRange<LargeArenaRange<
         LocalCacheSizeBits,
         LocalCacheSizeBits,
         Pagemap,

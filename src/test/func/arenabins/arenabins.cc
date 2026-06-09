@@ -1,8 +1,8 @@
 /**
- * Unit tests for BackendArenaBins.
+ * Unit tests for ArenaBins.
  *
  * Exercises:
- *  - the chunk size class encoding (via `BackendArenaBinsTestAccess`),
+ *  - the chunk size class encoding (via `ArenaBinsTestAccess`),
  *  - the private bin classification (`bin_index`),
  *  - the narrow public surface: `Bitmap::add` / `find_for_request` /
  *    `clear`, and the pure `carve(range_t, n)` decomposition.
@@ -15,7 +15,7 @@
  * cross-checked against a slow reference scanner that formulates
  * "bin b serves request n" directly in terms of the canonical
  * `bin_subsets` table; raw word access for tests goes through
- * `BackendArenaBinsTestAccess::raw_*`.
+ * `ArenaBinsTestAccess::raw_*`.
  */
 
 #include "test/setup.h"
@@ -23,7 +23,7 @@
 
 #include <cstdio>
 #include <cstdlib>
-#include <snmalloc/backend_helpers/backend_arena_bins.h>
+#include <snmalloc/backend_helpers/arenabins.h>
 #include <snmalloc/ds_core/helpers.h>
 #include <vector>
 
@@ -31,15 +31,15 @@ namespace snmalloc
 {
   /**
    * Friend struct exposing private internals of
-   * `BackendArenaBins<B, MIN_SIZE_BITS>` (and its nested `Bitmap`)
-   * for unit tests. Forward-declared in `backend_arena_bins.h`;
+   * `ArenaBins<B, MIN_SIZE_BITS>` (and its nested `Bitmap`)
+   * for unit tests. Forward-declared in `arenabins.h`;
    * defined here to keep the test-access implementation out of the
    * in-tree header.
    */
   template<size_t INTERMEDIATE_BITS, size_t MIN_SIZE_BITS>
-  struct BackendArenaBinsTestAccess
+  struct ArenaBinsTestAccess
   {
-    using Bins = BackendArenaBins<INTERMEDIATE_BITS, MIN_SIZE_BITS>;
+    using Bins = ArenaBins<INTERMEDIATE_BITS, MIN_SIZE_BITS>;
 
     using Bitmap = typename Bins::Bitmap;
     using range_t = typename Bins::range_t;
@@ -195,15 +195,15 @@ namespace snmalloc
   };
 } // namespace snmalloc
 
-using snmalloc::BackendArenaBinsTestAccess;
+using snmalloc::ArenaBinsTestAccess;
 
 // Compile-time checks: a few size-class encoding properties that we want
 // to fail the build (not the runtime) if regressed.
 namespace static_checks
 {
-  using B1 = BackendArenaBinsTestAccess<1, 0>;
-  using B2 = BackendArenaBinsTestAccess<2, 0>;
-  using B3 = BackendArenaBinsTestAccess<3, 0>;
+  using B1 = ArenaBinsTestAccess<1, 0>;
+  using B2 = ArenaBinsTestAccess<2, 0>;
+  using B3 = ArenaBinsTestAccess<3, 0>;
 
   static_assert(B1::BINS_PER_EXP == 2, "B=1 BINS_PER_EXP");
   static_assert(B2::BINS_PER_EXP == 5, "B=2 BINS_PER_EXP");
@@ -243,7 +243,7 @@ namespace
   template<size_t B>
   constexpr bool serves(size_t bin, size_t n)
   {
-    using Bins = BackendArenaBinsTestAccess<B, 0>;
+    using Bins = ArenaBinsTestAccess<B, 0>;
     size_t e_b = bin / Bins::BINS_PER_EXP;
     size_t o_b = bin % Bins::BINS_PER_EXP;
     size_t raw = snmalloc::bits::to_exp_mant_const<B, 0>(n);
@@ -275,7 +275,7 @@ namespace
   template<size_t B>
   void check_chunk_sc_roundtrip()
   {
-    using Bins = BackendArenaBinsTestAccess<B, 0>;
+    using Bins = ArenaBinsTestAccess<B, 0>;
 
     // Properties (together these imply request is the smallest size class
     // with size >= s):
@@ -310,7 +310,7 @@ namespace
   template<size_t B>
   void check_sc_align()
   {
-    using Bins = BackendArenaBinsTestAccess<B, 0>;
+    using Bins = ArenaBinsTestAccess<B, 0>;
 
     for (size_t s = 1; s <= 4096; s++)
     {
@@ -345,10 +345,10 @@ namespace
 
   /// Collect all sc_t classes whose size fits in the test grid.
   template<size_t B>
-  std::vector<typename BackendArenaBinsTestAccess<B, 0>::sc_t>
+  std::vector<typename ArenaBinsTestAccess<B, 0>::sc_t>
   collect_classes(size_t max_size)
   {
-    using Bins = BackendArenaBinsTestAccess<B, 0>;
+    using Bins = ArenaBinsTestAccess<B, 0>;
     using sc_t = typename Bins::sc_t;
 
     std::vector<sc_t> v;
@@ -372,7 +372,7 @@ namespace
   template<size_t B>
   void check_bin_classification(size_t max_addr, size_t max_n)
   {
-    using Bins = BackendArenaBinsTestAccess<B, 0>;
+    using Bins = ArenaBinsTestAccess<B, 0>;
     auto classes = collect_classes<B>(max_n);
 
     for (size_t addr = 0; addr < max_addr; addr++)
@@ -411,7 +411,7 @@ namespace
   template<size_t B>
   void check_bin_id_range()
   {
-    using Bins = BackendArenaBinsTestAccess<B, 0>;
+    using Bins = ArenaBinsTestAccess<B, 0>;
 
     // bin_index always returns a value in [0, BINS_PER_EXP * (e+1)) for the
     // block's natural exponent e.
@@ -443,7 +443,7 @@ namespace
   template<size_t B>
   void check_info_consistency()
   {
-    using Bins = BackendArenaBinsTestAccess<B, 0>;
+    using Bins = ArenaBinsTestAccess<B, 0>;
 
     for (size_t s = 1; s <= 4096; s++)
     {
@@ -494,7 +494,7 @@ namespace
   template<size_t B>
   void check_to_exp_mant_equivalence()
   {
-    using Bins = BackendArenaBinsTestAccess<B, 0>;
+    using Bins = ArenaBinsTestAccess<B, 0>;
 
     auto check_one = [&](size_t n) {
       size_t r = snmalloc::bits::to_exp_mant<B, 0>(n);
@@ -543,9 +543,9 @@ namespace
   template<size_t B>
   size_t reference_find(
     size_t n_chunks,
-    const typename BackendArenaBinsTestAccess<B, 0>::Bitmap& bm)
+    const typename ArenaBinsTestAccess<B, 0>::Bitmap& bm)
   {
-    using Bins = BackendArenaBinsTestAccess<B, 0>;
+    using Bins = ArenaBinsTestAccess<B, 0>;
     using Bitmap = typename Bins::Bitmap;
     for (size_t b = 0; b < Bitmap::TOTAL_BINS; b++)
     {
@@ -560,7 +560,7 @@ namespace
   template<size_t B>
   void check_bitmap_smoke()
   {
-    using Bins = BackendArenaBinsTestAccess<B, 0>;
+    using Bins = ArenaBinsTestAccess<B, 0>;
     using Bitmap = typename Bins::Bitmap;
     Bitmap bm;
     if (!Bins::raw_empty(bm))
@@ -591,7 +591,7 @@ namespace
   template<size_t B, typename F>
   void for_each_class_info(F body)
   {
-    using Bins = BackendArenaBinsTestAccess<B, 0>;
+    using Bins = ArenaBinsTestAccess<B, 0>;
     for (size_t raw = 0; raw < Bins::MAX_SC; raw++)
     {
       size_t s = snmalloc::bits::from_exp_mant<B, 0>(raw);
@@ -603,7 +603,7 @@ namespace
   template<size_t B>
   void check_bitmap_find_empty()
   {
-    using Bins = BackendArenaBinsTestAccess<B, 0>;
+    using Bins = ArenaBinsTestAccess<B, 0>;
     using Bitmap = typename Bins::Bitmap;
     Bitmap bm;
     for_each_class_info<B>([&](size_t n, const auto& /*info*/) {
@@ -618,7 +618,7 @@ namespace
   template<size_t B>
   void check_bitmap_exhaustive_single_bit()
   {
-    using Bins = BackendArenaBinsTestAccess<B, 0>;
+    using Bins = ArenaBinsTestAccess<B, 0>;
     using Bitmap = typename Bins::Bitmap;
 
     // Gather a representative set of entries (one per distinct bitmap
@@ -671,7 +671,7 @@ namespace
   template<size_t B>
   void check_bitmap_multi_bit_random()
   {
-    using Bins = BackendArenaBinsTestAccess<B, 0>;
+    using Bins = ArenaBinsTestAccess<B, 0>;
     using Bitmap = typename Bins::Bitmap;
 
     struct Entry
@@ -741,7 +741,7 @@ namespace
   template<size_t B>
   void check_bitmap_word_boundary()
   {
-    using Bins = BackendArenaBinsTestAccess<B, 0>;
+    using Bins = ArenaBinsTestAccess<B, 0>;
     using Bitmap = typename Bins::Bitmap;
 
     auto check_predicted =
@@ -857,7 +857,7 @@ namespace
   template<size_t B>
   void check_bitmap_bin_index_integration()
   {
-    using Bins = BackendArenaBinsTestAccess<B, 0>;
+    using Bins = ArenaBinsTestAccess<B, 0>;
     using Bitmap = typename Bins::Bitmap;
 
     auto classes = collect_classes<B>(64);
@@ -902,7 +902,7 @@ namespace
   template<size_t B>
   void check_bitmap_add()
   {
-    using Bins = BackendArenaBinsTestAccess<B, 0>;
+    using Bins = ArenaBinsTestAccess<B, 0>;
     using Bitmap = typename Bins::Bitmap;
     using range_t = typename Bins::range_t;
 
@@ -976,7 +976,7 @@ namespace
   template<size_t B>
   void check_bitmap_find_min()
   {
-    using Bins = BackendArenaBinsTestAccess<B, 0>;
+    using Bins = ArenaBinsTestAccess<B, 0>;
     using Bitmap = typename Bins::Bitmap;
 
     struct Entry
@@ -1048,7 +1048,7 @@ namespace
   template<size_t B>
   void check_carve()
   {
-    using Bins = BackendArenaBinsTestAccess<B, 0>;
+    using Bins = ArenaBinsTestAccess<B, 0>;
     using range_t = typename Bins::range_t;
 
     auto classes = collect_classes<B>(64);
@@ -1137,7 +1137,7 @@ namespace
   template<size_t B>
   void run_all()
   {
-    std::printf("--- Running BackendArenaBinsTestAccess<%zu> tests ---\n", B);
+    std::printf("--- Running ArenaBinsTestAccess<%zu> tests ---\n", B);
     check_chunk_sc_roundtrip<B>();
     std::printf("  sc_t round-trip: OK\n");
     check_sc_align<B>();
@@ -1174,7 +1174,7 @@ namespace
   /// catch silent breakage of the canonical numbering.
   void check_known_values()
   {
-    using B2 = BackendArenaBinsTestAccess<2, 0>;
+    using B2 = ArenaBinsTestAccess<2, 0>;
 
     // size 1 -> raw 0, size 2 -> raw 1, size 3 -> raw 2, size 4 -> raw 3,
     // size 5 -> raw 4, ..., size 8 -> raw 7, size 10 -> raw 8.
@@ -1204,12 +1204,12 @@ namespace
     if (B2::BINS_PER_EXP != 5)
       std::abort();
 
-    using B3 = BackendArenaBinsTestAccess<3, 0>;
+    using B3 = ArenaBinsTestAccess<3, 0>;
 
     if (B3::BINS_PER_EXP != 13)
       std::abort();
 
-    using B1 = BackendArenaBinsTestAccess<1, 0>;
+    using B1 = ArenaBinsTestAccess<1, 0>;
     if (B1::BINS_PER_EXP != 2)
       std::abort();
   }
@@ -1217,8 +1217,8 @@ namespace
   /**
    * Verify that scaling the encoding by `UNIT_SIZE = 1 << MIN_SIZE_BITS`
    * is a structural equivalence: every public observation about a
-   * `BackendArenaBins<B, MIN_SIZE_BITS>` instance equals the
-   * corresponding observation on `BackendArenaBins<B, 0>` when the
+   * `ArenaBins<B, MIN_SIZE_BITS>` instance equals the
+   * corresponding observation on `ArenaBins<B, 0>` when the
    * input is scaled by `UNIT_SIZE` (and outputs, where they are sizes
    * or addresses, are also scaled by `UNIT_SIZE`).
    *
@@ -1228,8 +1228,8 @@ namespace
   template<size_t B, size_t MIN_SIZE_BITS>
   void check_min_size_bits_equivalence()
   {
-    using Scaled = BackendArenaBinsTestAccess<B, MIN_SIZE_BITS>;
-    using Base = BackendArenaBinsTestAccess<B, 0>;
+    using Scaled = ArenaBinsTestAccess<B, MIN_SIZE_BITS>;
+    using Base = ArenaBinsTestAccess<B, 0>;
     static_assert(MIN_SIZE_BITS > 0, "this check is for MIN_SIZE_BITS > 0");
     constexpr size_t U = size_t(1) << MIN_SIZE_BITS;
 
@@ -1329,7 +1329,7 @@ namespace
   /// raw 0 decodes to UNIT_SIZE bytes, etc.
   void check_known_values_unit_16()
   {
-    using BU = BackendArenaBinsTestAccess<2, 4>;
+    using BU = ArenaBinsTestAccess<2, 4>;
     constexpr size_t U = size_t(1) << 4;
 
     // size U (UNIT_SIZE) -> raw 0; size 2U -> raw 1; ...
@@ -1371,6 +1371,6 @@ int main(int, char**)
   run_all<2>();
   run_all<3>();
 
-  std::printf("All BackendArenaBins tests passed.\n");
+  std::printf("All ArenaBins tests passed.\n");
   return 0;
 }

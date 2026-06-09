@@ -549,10 +549,10 @@ if(NOT SNMALLOC_HEADER_ONLY_LIBRARY)
   # against both fast and check testlib variants.
   set(TESTLIB_ONLY_TESTS
     aligned_dealloc
-    backend_arena
-    backend_arena_bins
-    backend_arena_inplace
-    backend_arena_range
+    arena
+    arenabins
+    largearenarange
+    smallarenarange
     bits first_operation memory memory_usage multi_atexit multi_threadatexit
     redblack statistics teardown
     contention external_pointer large_alloc lotsofthreads post_teardown

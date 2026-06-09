@@ -1,5 +1,5 @@
 /**
- * Unit tests for BackendArena.
+ * Unit tests for Arena.
  *
  * Exercises the Rep adapters (BinRep, RangeRep), RBTree integration,
  * add_block with consolidation, remove_block with carving, the
@@ -21,7 +21,7 @@
 #endif
 #include "test/snmalloc_testlib.h"
 
-#include <snmalloc/backend_helpers/backend_arena.h>
+#include <snmalloc/backend_helpers/arena.h>
 
 namespace snmalloc
 {
@@ -32,26 +32,26 @@ namespace snmalloc
    * BackendStateWordRef (get, operator=, operator!=). Used by MockRep
    * to avoid requiring a real pagemap in unit tests.
    */
-  struct BackendArenaWordRef
+  struct ArenaWordRef
   {
     uintptr_t* val{nullptr};
 
-    constexpr BackendArenaWordRef() = default;
+    constexpr ArenaWordRef() = default;
 
-    constexpr BackendArenaWordRef(uintptr_t* p) : val(p) {}
+    constexpr ArenaWordRef(uintptr_t* p) : val(p) {}
 
     uintptr_t get() const
     {
       return *val;
     }
 
-    BackendArenaWordRef& operator=(uintptr_t v)
+    ArenaWordRef& operator=(uintptr_t v)
     {
       *val = v;
       return *this;
     }
 
-    bool operator!=(const BackendArenaWordRef& other) const
+    bool operator!=(const ArenaWordRef& other) const
     {
       return val != other.val;
     }
@@ -73,7 +73,7 @@ namespace snmalloc
     uintptr_t word2{0};
     uintptr_t range_word1{0};
     uintptr_t range_word2{0};
-    BackendArenaVariant variant{BackendArenaVariant::Min};
+    ArenaVariant variant{ArenaVariant::Min};
     size_t large_size{0};
     bool boundary{false};
   };
@@ -102,7 +102,7 @@ namespace snmalloc
   template<bool IsRange>
   struct MockTreeRep
   {
-    using Handle = BackendArenaWordRef;
+    using Handle = ArenaWordRef;
     using Contents = uintptr_t;
 
     static constexpr Contents null = 0;
@@ -179,12 +179,12 @@ namespace snmalloc
     using BinRep = MockTreeRep<false>;
     using RangeRep = MockTreeRep<true>;
 
-    static BackendArenaVariant get_variant(uintptr_t addr)
+    static ArenaVariant get_variant(uintptr_t addr)
     {
       return mock_store[mock_index(addr)].variant;
     }
 
-    static void set_variant(uintptr_t addr, BackendArenaVariant v)
+    static void set_variant(uintptr_t addr, ArenaVariant v)
     {
       mock_store[mock_index(addr)].variant = v;
     }
@@ -203,10 +203,9 @@ namespace snmalloc
     // entry.is_boundary() from the pagemap. The boundary flag lives
     // per-chunk in mock_store; mock_index asserts the index is in
     // range, so any caller that probes outside the arena trips the
-    // assertion — this catches the buddy.h:90-93 unsafe-probe pattern
-    // (calling can_consolidate before confirming the address is in
-    // our region) in BackendArena unit tests rather than as a runtime
-    // segfault in release builds.
+    // assertion — this catches accidental out-of-region probes in
+    // Arena unit tests rather than as a release-build
+    // segfault.
     static bool can_consolidate(uintptr_t addr)
     {
       return !mock_store[mock_index(addr)].boundary;
@@ -214,7 +213,7 @@ namespace snmalloc
   };
 
   // ---- Test access ----
-  struct BackendArenaTestAccess
+  struct ArenaTestAccess
   {
     template<typename Arena>
     static auto& get_bin_trees(Arena& a)
@@ -251,9 +250,9 @@ namespace snmalloc
   // K = number of address bits the arena covers above MIN_CHUNK_BITS.
   // K=6 → arena of 64 chunks, K=8 → 256 chunks, K=10 → 1024 chunks.
   template<size_t K>
-  using Arena = BackendArena<MockRep, MIN_CHUNK_BITS, MIN_CHUNK_BITS + K>;
+  using TestArena = Arena<MockRep, MIN_CHUNK_BITS, MIN_CHUNK_BITS + K>;
 
-  using Bins = BackendArenaBins<2, MIN_CHUNK_BITS>;
+  using Bins = ArenaBins<2, MIN_CHUNK_BITS>;
 
   // ==================================================================
   // (A) Accessor round-trips
@@ -263,14 +262,14 @@ namespace snmalloc
     reset_mock_store();
     uintptr_t a = chunk_addr(10);
 
-    MockRep::set_variant(a, BackendArenaVariant::Min);
-    SNMALLOC_ASSERT(MockRep::get_variant(a) == BackendArenaVariant::Min);
+    MockRep::set_variant(a, ArenaVariant::Min);
+    SNMALLOC_ASSERT(MockRep::get_variant(a) == ArenaVariant::Min);
 
-    MockRep::set_variant(a, BackendArenaVariant::EvenTwo);
-    SNMALLOC_ASSERT(MockRep::get_variant(a) == BackendArenaVariant::EvenTwo);
+    MockRep::set_variant(a, ArenaVariant::EvenTwo);
+    SNMALLOC_ASSERT(MockRep::get_variant(a) == ArenaVariant::EvenTwo);
 
-    MockRep::set_variant(a, BackendArenaVariant::Large);
-    SNMALLOC_ASSERT(MockRep::get_variant(a) == BackendArenaVariant::Large);
+    MockRep::set_variant(a, ArenaVariant::Large);
+    SNMALLOC_ASSERT(MockRep::get_variant(a) == ArenaVariant::Large);
 
     printf("  Variant round-trip: OK\n");
   }
@@ -318,16 +317,16 @@ namespace snmalloc
   // (B) RBTree<BinRep> / RBTree<RangeRep> smoke
   // ==================================================================
 
-  // We can't directly instantiate BinRep/RangeRep outside BackendArena
+  // We can't directly instantiate BinRep/RangeRep outside Arena
   // since they are private nested types. Instead, test them through
-  // BackendArena's add_block/remove_block which exercise both trees.
+  // Arena's add_block/remove_block which exercise both trees.
   // For smoke testing of tree operations directly, we test through
-  // the BackendArena's own invariant and operation correctness.
+  // the Arena's own invariant and operation correctness.
 
   static void test_rbtree_smoke_via_arena()
   {
     reset_mock_store();
-    Arena<8> arena;
+    TestArena<8> arena;
     arena.check_invariant(true);
 
     // Insert a few non-adjacent blocks.
@@ -370,7 +369,7 @@ namespace snmalloc
   static void test_empty_invariant()
   {
     reset_mock_store();
-    Arena<K> arena;
+    TestArena<K> arena;
     arena.check_invariant(true);
     printf("  Empty invariant (K=%zu): OK\n", K);
   }
@@ -381,7 +380,7 @@ namespace snmalloc
   static void test_add_no_consolidation()
   {
     reset_mock_store();
-    Arena<8> arena;
+    TestArena<8> arena;
 
     // Insert several non-adjacent blocks of various sizes.
     struct
@@ -414,7 +413,7 @@ namespace snmalloc
   static void test_remove_exact()
   {
     reset_mock_store();
-    Arena<8> arena;
+    TestArena<8> arena;
 
     // Insert 3 blocks of size 5 at non-adjacent locations.
     arena.add_block(chunk_addr(10), chunk_size(5));
@@ -442,7 +441,7 @@ namespace snmalloc
   static void test_remove_carving()
   {
     reset_mock_store();
-    Arena<8> arena;
+    TestArena<8> arena;
 
     // Insert one block of size 10.
     arena.add_block(chunk_addr(10), chunk_size(10));
@@ -513,7 +512,7 @@ namespace snmalloc
   static void test_consolidation_p_min()
   {
     reset_mock_store();
-    Arena<8> arena;
+    TestArena<8> arena;
     add_and_check(arena, 10, 1);
     add_and_check(arena, 11, 3);
 
@@ -529,7 +528,7 @@ namespace snmalloc
   static void test_consolidation_p_nonmin()
   {
     reset_mock_store();
-    Arena<8> arena;
+    TestArena<8> arena;
     add_and_check(arena, 10, 3);
     add_and_check(arena, 13, 2);
 
@@ -544,7 +543,7 @@ namespace snmalloc
   static void test_consolidation_s_min()
   {
     reset_mock_store();
-    Arena<8> arena;
+    TestArena<8> arena;
     add_and_check(arena, 14, 1);
     add_and_check(arena, 11, 3);
 
@@ -559,7 +558,7 @@ namespace snmalloc
   static void test_consolidation_s_nonmin()
   {
     reset_mock_store();
-    Arena<8> arena;
+    TestArena<8> arena;
     add_and_check(arena, 14, 4);
     add_and_check(arena, 11, 3);
 
@@ -574,7 +573,7 @@ namespace snmalloc
   static void test_consolidation_ps_both_min()
   {
     reset_mock_store();
-    Arena<8> arena;
+    TestArena<8> arena;
     add_and_check(arena, 10, 1);
     add_and_check(arena, 12, 1);
     add_and_check(arena, 11, 1);
@@ -590,7 +589,7 @@ namespace snmalloc
   static void test_consolidation_ps_p_min_s_nonmin()
   {
     reset_mock_store();
-    Arena<8> arena;
+    TestArena<8> arena;
     add_and_check(arena, 10, 1);
     add_and_check(arena, 14, 3);
     add_and_check(arena, 11, 3);
@@ -606,7 +605,7 @@ namespace snmalloc
   static void test_consolidation_ps_p_nonmin_s_min()
   {
     reset_mock_store();
-    Arena<8> arena;
+    TestArena<8> arena;
     add_and_check(arena, 10, 3);
     add_and_check(arena, 16, 1);
     add_and_check(arena, 13, 3);
@@ -622,7 +621,7 @@ namespace snmalloc
   static void test_consolidation_ps_both_nonmin()
   {
     reset_mock_store();
-    Arena<8> arena;
+    TestArena<8> arena;
     add_and_check(arena, 10, 4);
     add_and_check(arena, 19, 5);
     add_and_check(arena, 14, 5);
@@ -642,29 +641,29 @@ namespace snmalloc
   {
     // Odd chunk index → OddTwo, even → EvenTwo.
     reset_mock_store();
-    Arena<8> arena;
+    TestArena<8> arena;
 
     // Odd address: chunk 11, size 2
     arena.add_block(chunk_addr(11), chunk_size(2));
     SNMALLOC_ASSERT(
-      MockRep::get_variant(chunk_addr(11)) == BackendArenaVariant::OddTwo);
+      MockRep::get_variant(chunk_addr(11)) == ArenaVariant::OddTwo);
     arena.check_invariant(true);
 
     // Even address: chunk 20, size 2
     arena.add_block(chunk_addr(20), chunk_size(2));
     SNMALLOC_ASSERT(
-      MockRep::get_variant(chunk_addr(20)) == BackendArenaVariant::EvenTwo);
+      MockRep::get_variant(chunk_addr(20)) == ArenaVariant::EvenTwo);
     arena.check_invariant(true);
 
     // Both should be in the range tree.
-    auto& rt = BackendArenaTestAccess::get_range_tree(arena);
+    auto& rt = ArenaTestAccess::get_range_tree(arena);
     auto p1 = rt.get_root_path();
     SNMALLOC_ASSERT(rt.find(p1, chunk_addr(11)));
     auto p2 = rt.get_root_path();
     SNMALLOC_ASSERT(rt.find(p2, chunk_addr(20)));
 
     // OddTwo (chunk 11) should be in bin 0 (size-1 servable set).
-    auto& bt0 = BackendArenaTestAccess::get_bin_trees(arena)[0];
+    auto& bt0 = ArenaTestAccess::get_bin_trees(arena)[0];
     auto p3 = bt0.get_root_path();
     SNMALLOC_ASSERT(bt0.find(p3, chunk_addr(11)));
 
@@ -679,7 +678,7 @@ namespace snmalloc
   {
     // contains_min must not match OddTwo entries.
     reset_mock_store();
-    Arena<8> arena;
+    TestArena<8> arena;
 
     // Add OddTwo block at chunk 11 (odd, size 2).
     arena.add_block(chunk_addr(11), chunk_size(2));
@@ -709,7 +708,7 @@ namespace snmalloc
   {
     // OddTwo block should consolidate via the range tree.
     reset_mock_store();
-    Arena<8> arena;
+    TestArena<8> arena;
 
     // Add OddTwo at chunk 11 (odd, size 2 → chunks 11-12).
     arena.add_block(chunk_addr(11), chunk_size(2));
@@ -733,7 +732,7 @@ namespace snmalloc
   {
     // Consolidation where the new block is a predecessor of OddTwo.
     reset_mock_store();
-    Arena<8> arena;
+    TestArena<8> arena;
 
     // Add OddTwo at chunk 11 (odd, size 2 → chunks 11-12).
     arena.add_block(chunk_addr(11), chunk_size(2));
@@ -755,7 +754,7 @@ namespace snmalloc
   {
     // remove_block(1) from an OddTwo block should carve correctly.
     reset_mock_store();
-    Arena<8> arena;
+    TestArena<8> arena;
 
     // Add OddTwo at chunk 11 (odd, size 2).
     arena.add_block(chunk_addr(11), chunk_size(2));
@@ -786,7 +785,7 @@ namespace snmalloc
   {
     // K=4 → 16-chunk arena. Use base offset 16 to avoid address 0.
     reset_mock_store();
-    Arena<4> arena;
+    TestArena<4> arena;
 
     constexpr size_t BASE = 16;
 
@@ -821,7 +820,7 @@ namespace snmalloc
   {
     // K=4 → 16-chunk arena. Use base offset 16 to avoid address 0.
     reset_mock_store();
-    Arena<4> arena;
+    TestArena<4> arena;
 
     constexpr size_t BASE = 16;
 
@@ -971,7 +970,7 @@ namespace snmalloc
   static void test_stress_seed(size_t seed, size_t num_ops)
   {
     reset_mock_store();
-    Arena<K> arena;
+    TestArena<K> arena;
 
     constexpr size_t ARENA_CHUNKS = bits::one_at_bit(K);
     // Offset all chunk addresses to avoid address 0 (tree null).
@@ -1109,8 +1108,8 @@ namespace snmalloc
   static void test_multi_instance_basic()
   {
     reset_mock_store();
-    Arena<8> arena_a;
-    Arena<8> arena_b;
+    TestArena<8> arena_a;
+    TestArena<8> arena_b;
     constexpr size_t BASE = 256; // avoid address 0
 
     // Add distinct blocks to each arena.
@@ -1143,8 +1142,8 @@ namespace snmalloc
   static void test_multi_instance_consolidation()
   {
     reset_mock_store();
-    Arena<8> arena_a;
-    Arena<8> arena_b;
+    TestArena<8> arena_a;
+    TestArena<8> arena_b;
     constexpr size_t BASE = 256;
 
     // Arena B holds two blocks with a gap: [20..24) and [28..32).
@@ -1176,8 +1175,8 @@ namespace snmalloc
   static void test_multi_stress_seed(size_t seed, size_t num_ops)
   {
     reset_mock_store();
-    Arena<K> arena_a;
-    Arena<K> arena_b;
+    TestArena<K> arena_a;
+    TestArena<K> arena_b;
 
     constexpr size_t ARENA_CHUNKS = bits::one_at_bit(K);
     constexpr size_t BASE = ARENA_CHUNKS;
@@ -1359,7 +1358,7 @@ namespace snmalloc
   {
     reset_mock_store();
     constexpr size_t K = 6;
-    Arena<K> arena;
+    TestArena<K> arena;
 
     uintptr_t p_addr = chunk_addr(2);
     uintptr_t a_addr = chunk_addr(4);
@@ -1385,7 +1384,7 @@ namespace snmalloc
   {
     reset_mock_store();
     constexpr size_t K = 6;
-    Arena<K> arena;
+    TestArena<K> arena;
 
     uintptr_t a_addr = chunk_addr(2);
     uintptr_t s_addr = chunk_addr(4);
@@ -1411,7 +1410,7 @@ namespace snmalloc
   {
     reset_mock_store();
     constexpr size_t K = 6;
-    Arena<K> arena;
+    TestArena<K> arena;
 
     // Three adjacent blocks: chunks [4,6), [6,8), [8,10).
     // Boundary at chunk 8 blocks [6,8) ↔ [8,10) merge but allows
@@ -1434,7 +1433,7 @@ namespace snmalloc
 
   // Regression test: a block whose successor address sits one past
   // the arena's pagemap must not trigger a can_consolidate probe of
-  // that out-of-range chunk. The fix is in BackendArena::add_block —
+  // that out-of-range chunk. The fix is in Arena::add_block —
   // tree-membership tests gate the can_consolidate read. MockRep's
   // can_consolidate now dereferences mock_store via mock_index, which
   // asserts on out-of-range indices, so an unguarded probe in
@@ -1444,7 +1443,7 @@ namespace snmalloc
   {
     reset_mock_store();
     constexpr size_t K = 10;
-    Arena<K> arena;
+    TestArena<K> arena;
     constexpr size_t ARENA_CHUNKS = size_t{1} << K;
 
     // Block ending at the very top of the arena (succ_addr would
@@ -1464,7 +1463,7 @@ namespace snmalloc
   {
     reset_mock_store();
     constexpr size_t K = 6;
-    Arena<K> arena;
+    TestArena<K> arena;
 
     uintptr_t p_addr = chunk_addr(4);
     uintptr_t a_addr = chunk_addr(5);
@@ -1489,7 +1488,7 @@ namespace snmalloc
 
 int main()
 {
-  printf("--- BackendArena tests ---\n");
+  printf("--- Arena tests ---\n");
 
   printf("(A) Accessor round-trips:\n");
   snmalloc::test_variant_roundtrip();
@@ -1547,6 +1546,6 @@ int main()
   snmalloc::test_block_at_arena_top_edge();
   snmalloc::test_boundary_blocks_min_predecessor();
 
-  printf("All BackendArena tests passed.\n");
+  printf("All Arena tests passed.\n");
   return 0;
 }

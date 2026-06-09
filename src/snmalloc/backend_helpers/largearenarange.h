@@ -1,13 +1,13 @@
 #pragma once
 
-#include "backend_arena.h"
+#include "arena.h"
 #include "empty_range.h"
 #include "range_helpers.h"
 
 namespace snmalloc
 {
   /**
-   * PagemapRep — Rep for `BackendArena` over a Pagemap.
+   * PagemapRep — Rep for `Arena` over a Pagemap.
    *
    * Each free block uses three pagemap entries at unit-aligned offsets:
    *
@@ -176,14 +176,14 @@ namespace snmalloc
     using BinRep = TreeRep<0, BIN_META_MASK, BIN_REP_NAME>;
     using RangeRep = TreeRep<1, RANGE_META_MASK, RANGE_REP_NAME>;
 
-    static BackendArenaVariant get_variant(uintptr_t addr)
+    static ArenaVariant get_variant(uintptr_t addr)
     {
       auto w = word_at<0>(addr, Word::One);
-      return static_cast<BackendArenaVariant>(
+      return static_cast<ArenaVariant>(
         (w.get() & VARIANT_MASK) >> VARIANT_SHIFT);
     }
 
-    static void set_variant(uintptr_t addr, BackendArenaVariant v)
+    static void set_variant(uintptr_t addr, ArenaVariant v)
     {
       auto w = word_at<0>(addr, Word::One);
       w = (w.get() & ~VARIANT_MASK) |
@@ -214,15 +214,15 @@ namespace snmalloc
   };
 
   /**
-   * Range wrapper around BackendArena. Drop-in replacement for
-   * LargeBuddyRange in Pipe<...> compositions.
+   * Range wrapper around Arena, presenting the standard
+   * Range interface for use in Pipe<...> compositions.
    */
   template<
     size_t REFILL_SIZE_BITS,
     size_t MAX_SIZE_BITS,
     SNMALLOC_CONCEPT(IsWritablePagemap) Pagemap,
     size_t MIN_REFILL_SIZE_BITS = 0>
-  class BackendArenaRange
+  class LargeArenaRange
   {
     static_assert(
       REFILL_SIZE_BITS <= MAX_SIZE_BITS, "REFILL_SIZE_BITS > MAX_SIZE_BITS");
@@ -242,7 +242,7 @@ namespace snmalloc
 
       using PagemapRepT = PagemapRep<Pagemap, MIN_CHUNK_BITS, MAX_SIZE_BITS>;
 
-      BackendArena<PagemapRepT, MIN_CHUNK_BITS, MAX_SIZE_BITS> arena;
+      Arena<PagemapRepT, MIN_CHUNK_BITS, MAX_SIZE_BITS> arena;
       size_t requested_total = 0;
 
       void parent_dealloc(uintptr_t addr, size_t size)
@@ -336,7 +336,7 @@ namespace snmalloc
       /**
        * `size` exceeds the arena's representable range and must be
        * routed to the parent (or refused if no parent exists). Matches
-       * `BackendArena::add_block`'s `size < bits::one_at_bit(MAX_SIZE_BITS)`
+       * `Arena::add_block`'s `size < bits::one_at_bit(MAX_SIZE_BITS)`
        * precondition exactly, so alloc and dealloc bypass on the same
        * boundary.
        */

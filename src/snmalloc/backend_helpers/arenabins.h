@@ -8,11 +8,11 @@
 namespace snmalloc
 {
   template<size_t INTERMEDIATE_BITS, size_t MIN_SIZE_BITS>
-  struct BackendArenaBinsTestAccess;
+  struct ArenaBinsTestAccess;
 
   /**
    * Size class enumeration and bin classification used by the
-   * BackendArena.
+   * Arena.
    *
    * Template parameter `B` (mantissa-bit width of snmalloc's
    * non-power-of-two size class scheme) determines the number of
@@ -40,14 +40,14 @@ namespace snmalloc
    *    `add` / `find_for_request` / `clear`.
    *
    * Everything else is private; tests reach it via
-   * `BackendArenaBinsTestAccess<B, MIN_SIZE_BITS>`.
+   * `ArenaBinsTestAccess<B, MIN_SIZE_BITS>`.
    */
   template<size_t INTERMEDIATE_BITS, size_t MIN_SIZE_BITS>
-  class BackendArenaBins
+  class ArenaBins
   {
     static_assert(
       INTERMEDIATE_BITS >= 1 && INTERMEDIATE_BITS <= 3,
-      "BackendArenaBins supports B in {1, 2, 3}");
+      "ArenaBins supports B in {1, 2, 3}");
     static_assert(
       MIN_SIZE_BITS + INTERMEDIATE_BITS < bits::BITS,
       "MIN_SIZE_BITS + INTERMEDIATE_BITS must leave room for at least one "
@@ -73,7 +73,7 @@ namespace snmalloc
     };
 
   private:
-    friend struct BackendArenaBinsTestAccess<INTERMEDIATE_BITS, MIN_SIZE_BITS>;
+    friend struct ArenaBinsTestAccess<INTERMEDIATE_BITS, MIN_SIZE_BITS>;
 
     static constexpr size_t B = INTERMEDIATE_BITS;
 
@@ -309,7 +309,7 @@ namespace snmalloc
      */
     class Bitmap
     {
-      friend struct BackendArenaBinsTestAccess<
+      friend struct ArenaBinsTestAccess<
         INTERMEDIATE_BITS,
         MIN_SIZE_BITS>;
 
@@ -342,7 +342,7 @@ namespace snmalloc
       }
 
       /// Read-only test: is the bit for `bin_id` set?
-      /// Used by `BackendArena::invariant()`.
+      /// Used by `Arena::invariant()`.
       bool test(size_t bin_id) const
       {
         SNMALLOC_ASSERT(bin_id < TOTAL_BINS);
@@ -680,7 +680,7 @@ namespace snmalloc
      * `carve_info[sc]` is the size/alignment record for each in-range
      * sc (consumed by `carve` and by `bin_offset_at`'s `fits`
      * predicate during free-side classification).
-     * `exp_first_sc[e]` is the first raw sc id at BackendArenaBins
+     * `exp_first_sc[e]` is the first raw sc id at ArenaBins
      * exponent e (with `exp_first_sc[bits::BITS] = MAX_SC` as a sentinel
      * so `[exp_first_sc[e], exp_first_sc[e + 1])` is a valid raw range
      * for every `e < bits::BITS`).

@@ -4,14 +4,14 @@
 #include "../ds_core/sizeclassconfig.h"
 #include "../stl/array.h"
 #include "../stl/utility.h"
-#include "backend_arena_bins.h"
+#include "arenabins.h"
 
 #include <stddef.h>
 #include <stdint.h>
 
 namespace snmalloc
 {
-  struct BackendArenaTestAccess;
+  struct ArenaTestAccess;
 
   /**
    * Size encoding for a free block's first pagemap entry.
@@ -21,7 +21,7 @@ namespace snmalloc
    *          placed in a size-1 bin (cannot serve aligned size-2 requests).
    * Large:   3+ chunks; precise size stored in a separate entry.
    */
-  enum class BackendArenaVariant : uint8_t
+  enum class ArenaVariant : uint8_t
   {
     Min = 0,
     EvenTwo = 1,
@@ -45,7 +45,7 @@ namespace snmalloc
    *   - `using RangeRep` — full RBTree Rep for the range tree, same
    *     shape as `BinRep`.
    *   - `get_variant(addr)` / `set_variant(addr, v)` — the
-   *     `BackendArenaVariant` tag for the block starting at `addr`.
+   *     `ArenaVariant` tag for the block starting at `addr`.
    *   - `get_large_size(addr)` / `set_large_size(addr, size)` —
    *     exact byte size for `Large` blocks (3+ units).
    *   - `can_consolidate(higher_addr) -> bool` — whether the block at
@@ -62,7 +62,7 @@ namespace snmalloc
    * returned to the caller.
    */
   template<typename Rep, size_t MIN_SIZE_BITS, size_t MAX_SIZE_BITS>
-  class BackendArena
+  class Arena
   {
     static_assert(MAX_SIZE_BITS > MIN_SIZE_BITS);
     static_assert(MAX_SIZE_BITS < bits::BITS);
@@ -72,7 +72,7 @@ namespace snmalloc
     static constexpr size_t TWO_UNITS = size_t(2) << MIN_SIZE_BITS;
 
     static constexpr size_t B = 2;
-    using Bins = BackendArenaBins<B, MIN_SIZE_BITS>;
+    using Bins = ArenaBins<B, MIN_SIZE_BITS>;
 
     static_assert(
       bits::one_at_bit(MAX_SIZE_BITS) - 1 <= Bins::max_supported_size());
@@ -89,15 +89,15 @@ namespace snmalloc
 
     // ---- Metadata helpers ----
 
-    static BackendArenaVariant variant_of(size_t size, uintptr_t addr)
+    static ArenaVariant variant_of(size_t size, uintptr_t addr)
     {
       if (size == UNIT_SIZE)
-        return BackendArenaVariant::Min;
+        return ArenaVariant::Min;
       if (size == TWO_UNITS)
         return ((addr >> MIN_SIZE_BITS) & 1) == 0 ?
-          BackendArenaVariant::EvenTwo :
-          BackendArenaVariant::OddTwo;
-      return BackendArenaVariant::Large;
+          ArenaVariant::EvenTwo :
+          ArenaVariant::OddTwo;
+      return ArenaVariant::Large;
     }
 
     static stl::Pair<uintptr_t, size_t> range_from_addr(uintptr_t a)
@@ -107,12 +107,12 @@ namespace snmalloc
       auto v = Rep::get_variant(a);
       switch (v)
       {
-        case BackendArenaVariant::Min:
+        case ArenaVariant::Min:
           return {a, UNIT_SIZE};
-        case BackendArenaVariant::EvenTwo:
-        case BackendArenaVariant::OddTwo:
+        case ArenaVariant::EvenTwo:
+        case ArenaVariant::OddTwo:
           return {a, TWO_UNITS};
-        case BackendArenaVariant::Large:
+        case ArenaVariant::Large:
         {
           size_t s = Rep::get_large_size(a);
           SNMALLOC_ASSERT(
@@ -129,7 +129,7 @@ namespace snmalloc
     {
       auto path = bin_trees[0].get_root_path();
       return bin_trees[0].find(path, a) &&
-        Rep::get_variant(a) == BackendArenaVariant::Min;
+        Rep::get_variant(a) == ArenaVariant::Min;
     }
 
     void insert_block(uintptr_t addr, size_t size)
@@ -156,12 +156,12 @@ namespace snmalloc
         bitmap.clear(bin);
     }
 
-    friend struct BackendArenaTestAccess;
+    friend struct ArenaTestAccess;
 
   public:
     using addr_t = uintptr_t;
 
-    constexpr BackendArena() = default;
+    constexpr Arena() = default;
 
     /**
      * Add a free block at `addr` with `size` bytes. The block is
@@ -179,7 +179,7 @@ namespace snmalloc
       // Unit alignment is required: callers feeding parent ranges (e.g.
       // mmap-backed PalRange returns page-aligned but not chunk-aligned
       // memory) must trim their input to UNIT_SIZE before reaching here.
-      // BackendArenaRange::add_range does this trim.
+      // LargeArenaRange::add_range does this trim.
       SNMALLOC_ASSERT((addr & (UNIT_SIZE - 1)) == 0);
       SNMALLOC_ASSERT(size > 0);
       SNMALLOC_ASSERT((size & (UNIT_SIZE - 1)) == 0);
@@ -348,7 +348,7 @@ namespace snmalloc
         uintptr_t prev = 0;
         bool prev_valid = false;
         bin_trees[0].for_each([&](uintptr_t node) {
-          if (Rep::get_variant(node) != BackendArenaVariant::Min)
+          if (Rep::get_variant(node) != ArenaVariant::Min)
             return;
           if (prev_valid)
             SNMALLOC_CHECK(
@@ -414,7 +414,7 @@ namespace snmalloc
           auto v = Rep::get_variant(node);
           auto [a, s] = range_from_addr(node);
           SNMALLOC_CHECK(v == variant_of(s, a));
-          if (v == BackendArenaVariant::Large)
+          if (v == ArenaVariant::Large)
             SNMALLOC_CHECK(Rep::get_large_size(node) == s);
         });
       }

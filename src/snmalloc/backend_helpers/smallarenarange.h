@@ -1,7 +1,7 @@
 #pragma once
 
 #include "../pal/pal.h"
-#include "backend_arena.h"
+#include "arena.h"
 #include "empty_range.h"
 #include "inplacerep.h"
 #include "range_helpers.h"
@@ -9,7 +9,7 @@
 namespace snmalloc
 {
   /**
-   * Small-grained range backed by `BackendArena` with in-band
+   * Small-grained range backed by `Arena` with in-band
    * (`InplaceRep`) tree-node storage. Serves blocks of any
    * unit-aligned size — not restricted to powers of two — for
    * `SlabMetadata` allocations.
@@ -34,7 +34,7 @@ namespace snmalloc
       using RepT = InplaceRep<Authmap, ChunkBounds>;
       static constexpr size_t MIN_BITS = RepT::MIN_BITS;
 
-      BackendArena<RepT, MIN_BITS, MIN_CHUNK_BITS> arena;
+      Arena<RepT, MIN_BITS, MIN_CHUNK_BITS> arena;
 
     public:
       static constexpr size_t UNIT_SIZE = RepT::UNIT_SIZE;
@@ -128,7 +128,7 @@ namespace snmalloc
        *
        * Requests `requested = align_up(size, align)` bytes; because
        * `align` is pow2 and `requested` is a multiple of `align`,
-       * `BackendArena`'s carve returns an `align`-aligned base
+       * `Arena`'s carve returns an `align`-aligned base
        * without a caller-side over-allocate-and-trim. The tail
        * `[align_up(size, UNIT_SIZE), requested)` is donated via
        * `add_range_impl`. The sub-unit slice

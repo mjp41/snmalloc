@@ -6,8 +6,8 @@ The design will use the Red-Black tree that currently underlies the buddy alloca
 
 Each block will be part of two structures:
 
-* [Bin] A red-black tree of all blocks held by this BackendArena, in the same bin, ordered by address.
-* [Range] A red-black tree of all blocks held by this BackendArena, ordered by address.
+* [Bin] A red-black tree of all blocks held by this Arena, in the same bin, ordered by address.
+* [Range] A red-black tree of all blocks held by this Arena, ordered by address.
 
 Note that for block of the minimum size will be handled specially as there is insufficient space to have them particpate in both structures, so they will only particpate in the first.
 
@@ -38,7 +38,7 @@ As all the state is looked up from the RB-tree, then we can have multiple instan
 
 ## Implementation
 
-### Build BackendArena
+### Build Arena
 
 This should use two RB-trees.
 
@@ -50,11 +50,11 @@ There should be a runtime checked invariant that
 * the system is maximally consolidated, and
 * the system is consistent between the two RB-trees.
 
-### Build BackendArenaRange
+### Build LargeArenaRange
 
-This should wrap the BackendArena using the snmalloc Range approach that is used in the current backend pipelines.
+This should wrap the Arena using the snmalloc Range approach that is used in the current backend pipelines.
 
-### Update backend to use BackendArenaRange
+### Update backend to use LargeArenaRange
 
 ### Update front-end to request non-power of two size classes for the backend.
 
@@ -80,15 +80,15 @@ We can extend the system by effectively having multiple "Range" RB-trees, and th
 
 ---
 
-# Implementation plan: BackendArena phase
+# Implementation plan: Arena phase
 
 ## Scope of this phase
 
-This plan covers **only** the `BackendArena` data structure and its standalone
+This plan covers **only** the `Arena` data structure and its standalone
 unit tests. The following are explicitly deferred to follow-up plans, each of
 which will become its own PLAN.md revision:
 
-- `BackendArenaRange` — wrapping `BackendArena` behind snmalloc's Range API.
+- `LargeArenaRange` — wrapping `Arena` behind snmalloc's Range API.
 - Backend integration — replacing `LargeBuddyRange` in
   `backend/standard_range.h` and `backend/meta_protected_range.h`.
 - Front-end requesting non-power-of-two chunk sizes from the backend.
@@ -112,7 +112,7 @@ For `INTERMEDIATE_BITS=B` the bin count per exponent is `B=1: 2, B=2: 5,
 B=3: 13, B=4: 34`. The snmalloc default is `B=2`. The number of exponents in
 range is `MAX_SIZE_BITS - MIN_CHUNK_BITS + 1`.
 
-Each `BackendArena` instance owns:
+Each `Arena` instance owns:
 
 - A flat array of RBTree roots, indexed by bin id (one bin id per
   (exponent, servable-set) pair).
@@ -143,7 +143,7 @@ bitmap of non-empty bins).
 
 ### Range: single tree across all blocks (with min-size exception)
 
-A single RBTree per `BackendArena` orders all *non-min-size* free blocks by
+A single RBTree per `Arena` orders all *non-min-size* free blocks by
 address. This is the structure used for adjacency lookup during
 consolidation:
 
@@ -158,10 +158,10 @@ RBTree.
 
 A free block occupies one or more `MIN_CHUNK_SIZE` chunks, with a pagemap
 entry per chunk. The first pagemap entry of a free block carries a
-**variant tag** that tells `BackendArena` how to interpret the other
+**variant tag** that tells `Arena` how to interpret the other
 entries in the block:
 
-| Variant     | Value | Block size     | Alignment      | Pagemap entries used by BackendArena                                   |
+| Variant     | Value | Block size     | Alignment      | Pagemap entries used by Arena                                   |
 |-------------|-------|----------------|----------------|------------------------------------------------------------------------|
 | `Min`       | 0     | exactly min    | any            | 1 entry — both words store the Bin RBTree node (left/right + colour).  |
 | `TwoMin`    | 1     | exactly 2× min | 2-aligned      | 2 entries — first stores Bin node, second stores Range node.            |
@@ -195,7 +195,7 @@ Note: only blocks at even chunk addresses can be `TwoMin`. The
 distinguish `TwoMin` from `OddTwo`.
 
 **Tree membership is the source of truth for "is this block free?".**
-The variant tag is only meaningful for entries `BackendArena` reaches via
+The variant tag is only meaningful for entries `Arena` reaches via
 its own RBTrees; nothing outside the data structure probes the tag. The
 tag is therefore not a state machine that needs an explicit
 "BackendOwned" / "allocated" value: when a block is removed from its
@@ -233,8 +233,8 @@ memcpy-fix follow-up plan.
 ### Adjacency lookup
 
 All adjacency lookups are performed via RB-tree finds in this
-`BackendArena`'s own trees. **No pagemap probing.** The pagemap is shared
-across `BackendArena` instances (e.g. thread-local + global), and reading
+`Arena`'s own trees. **No pagemap probing.** The pagemap is shared
+across `Arena` instances (e.g. thread-local + global), and reading
 entries owned by another instance would be unsafe under concurrent
 modification. By restricting reads to RB-tree traversals — which only
 follow pointers we wrote, into entries we own — adjacency detection is
@@ -310,7 +310,7 @@ excludes min-size blocks. Adjacency for min-size neighbours is found via
 ### Write ordering within add/remove
 
 Because adjacency lookups are RB-tree-only, a block is "visible to
-adjacency" exactly when it is reachable from one of this `BackendArena`'s
+adjacency" exactly when it is reachable from one of this `Arena`'s
 RBTree roots. The ordering rules collapse to two:
 
 - **add_block**: write the variant tag and any auxiliary data (precise
@@ -324,11 +324,11 @@ RBTree roots. The ordering rules collapse to two:
 
 No transient "BackendOwned" marker is needed: a chunk's free-ness is
 synonymous with its membership in some RBTree owned by this
-`BackendArena`.
+`Arena`.
 
 ### Invariants (debug-only, runtime-checked)
 
-The `BackendArena::invariant()` method checks:
+The `Arena::invariant()` method checks:
 
 1. **Maximally consolidated**: walking the Range tree in order, no two
    adjacent entries have `prev.addr + prev.size == curr.addr`; no min-size
@@ -351,7 +351,7 @@ The `BackendArena::invariant()` method checks:
 
 The new bins are indexed in **chunk units** (1 chunk = `MIN_CHUNK_SIZE`
 bytes), not bytes, and not the front-end `sizeclass_t` whose large variant
-is currently power-of-two only. `backend_arena_bins.h` defines the
+is currently power-of-two only. `arenabins.h` defines the
 chunk-unit size-class scheme using the snmalloc size-class formula
 `S = 2^e + m · 2^(e − B)` applied at **chunk-count exponents starting
 from zero**. Low-exponent special cases (chunk counts 1, 2, 3, …) follow
@@ -359,8 +359,8 @@ the same pattern as `bits::from_exp_mant` in
 `src/snmalloc/ds_core/sizeclassstatic.h`: at small exponents the mantissa
 space is degenerate, handled by enumeration.
 
-The public API of `BackendArenaBins<B>` — the integration contract
-`BackendArena` builds on — is intentionally narrow:
+The public API of `ArenaBins<B>` — the integration contract
+`Arena` builds on — is intentionally narrow:
 
 - `struct range_t { size_t base; size_t size; }` — a chunk-count range
   used to describe free blocks and carved sub-ranges.
@@ -405,7 +405,7 @@ rodata records, the bin-scheme constants (`B`, `MANTISSAS_PER_EXP`,
 `BINS_PER_EXP`, `MAX_SC`), `bitmap_info_for_request` /
 `carve_info_for_request`, `bin_index`, and the constexpr per-sc
 accessors — are private implementation details. They are reachable
-only via the friend struct `BackendArenaBinsTestAccess<B>` (defined in
+only via the friend struct `ArenaBinsTestAccess<B>` (defined in
 the test translation unit, see Phase 1) so unit tests can exercise
 them directly; code outside this header does not depend on
 them.
@@ -420,7 +420,7 @@ their precise chunk count where needed (`Large` variant).
 
 ### Exponent / bin-count bounds
 
-`BackendArena<Rep, MIN_SIZE_BITS, MAX_SIZE_BITS>` takes **byte-size
+`Arena<Rep, MIN_SIZE_BITS, MAX_SIZE_BITS>` takes **byte-size
 exponent** bounds (mirroring `Buddy<Rep, MIN_SIZE_BITS, MAX_SIZE_BITS>`).
 `MIN_SIZE_BITS` is the log2 of the unit of allocation; everything inside
 the arena is in multiples of `1 << MIN_SIZE_BITS`. The upper bound is
@@ -437,7 +437,7 @@ reconcile the front-end large size classes with this scheme.
 ### Multiple instances
 
 All state lives in pagemap-backed nodes and in per-instance roots/bitmaps;
-no global state. Multiple `BackendArena` instances can coexist (thread-local
+no global state. Multiple `Arena` instances can coexist (thread-local
 and global) for the future Range wrapper.
 
 ## Phases
@@ -482,10 +482,10 @@ broken, stop and report — do not start implementation on a broken base.
 **Test gate**: full ctest run completes; record pass/fail status of each
 test for later comparison.
 
-### Phase 1: BackendArenaBins — bin scheme, per-sc tables, and bitmap
+### Phase 1: ArenaBins — bin scheme, per-sc tables, and bitmap
 
-Add `src/snmalloc/backend_helpers/backend_arena_bins.h` defining
-`BackendArenaBins<INTERMEDIATE_BITS>`: the chunk-unit size-class
+Add `src/snmalloc/backend_helpers/arenabins.h` defining
+`ArenaBins<INTERMEDIATE_BITS>`: the chunk-unit size-class
 scheme, two per-sc rodata tables, the free-block classifier, and the
 nested non-empty-bins bitmap that the allocation fast path scans.
 
@@ -535,7 +535,7 @@ Following `prototype/skip_analysis.py`:
 - `BINS_PER_EXP` = 2 / 5 / 13 for `B` = 1 / 2 / 3 — the count of
   distinct *servable subsets* of mantissas at each exponent. Each bin
   is a single bit in the bitmap and a single RB-tree at the
-  `BackendArena` layer; bins are not size classes (multiple size
+  `Arena` layer; bins are not size classes (multiple size
   classes share a bin) and not exponents (each exponent has multiple
   bins).
 - `MAX_SC = ((bits::BITS - B) << B) + ((1 << B) - 1)` — one past the
@@ -594,16 +594,16 @@ A private `BinTable` struct holds (all `ModArray<...>`):
 - `bitmap_info[MAX_SC]`, `carve_info[MAX_SC]` — the per-sc tables
   above.
 - `exp_first_sc[bits::BITS + 1]` — first raw sc id at each
-  BackendArenaBins exponent (sentinel at index `bits::BITS` equals
+  ArenaBins exponent (sentinel at index `bits::BITS` equals
   `MAX_SC`). NOTE: this is not uniform stride — at the bottom of the
-  encoding the low regime squashes multiple BackendArenaBins exponents
+  encoding the low regime squashes multiple ArenaBins exponents
   into encoded-exponent 0.
 - `exp_bin_base[bits::BITS + 1]` — `e * BINS_PER_EXP`, precomputed so
   `bin_index` does no runtime multiply.
 - `cascade_steps[MANTISSAS_PER_EXP][MAX_CASCADE_STEPS]` — per-`m_top`
   decision lists for `bin_offset_at`.
 
-A `static constexpr BinTable table_{}` member of `BackendArenaBins<B>`
+A `static constexpr BinTable table_{}` member of `ArenaBins<B>`
 holds the populated instance. Tables sit in `.rodata`; no static
 initialiser runs at program start. Combined size at B=3 is on the
 order of tens of KB (estimate: 16 B/sc × 495 + 32 B/sc × 495 + small
@@ -676,7 +676,7 @@ compile-time helpers (`clz` / `clz_const`, `next_pow2` /
 ```cpp
 class Bitmap
 {
-  friend struct BackendArenaBinsTestAccess<INTERMEDIATE_BITS>;
+  friend struct ArenaBinsTestAccess<INTERMEDIATE_BITS>;
 
 public:
   static constexpr size_t TOTAL_BINS = BINS_PER_EXP * bits::BITS;
@@ -705,8 +705,8 @@ private:
   AND with the precomputed masks has no width mismatch; `bits::ctz`
   on a `size_t` produces the bit index.
 
-Friend declarations: `BackendArenaBins<B>` and its nested `Bitmap`
-each carry their own `friend struct BackendArenaBinsTestAccess<...>;`
+Friend declarations: `ArenaBins<B>` and its nested `Bitmap`
+each carry their own `friend struct ArenaBinsTestAccess<...>;`
 (C++ friendship does not transit to nested classes).
 
 Static asserts on bitmap layout:
@@ -751,8 +751,8 @@ The two ANDs are the entire bin-selection cost; no shifts, no
 
 #### Test surface
 
-`BackendArenaBinsTestAccess<INTERMEDIATE_BITS>` is **forward-declared**
-in `backend_arena_bins.h` (so the friend declarations can refer to it)
+`ArenaBinsTestAccess<INTERMEDIATE_BITS>` is **forward-declared**
+in `arenabins.h` (so the friend declarations can refer to it)
 and **defined in the test translation unit**
 `src/test/func/backend_arena_bins/backend_arena_bins.cc` (inside
 `namespace snmalloc`). The header therefore carries no
@@ -863,7 +863,7 @@ Spec slice = the Phase 1 section above. Reviewer checks:
 - The in-tree header carries no test-only surface (no `chunk_sc_t`
   handle class, no `request`, no `_const` variants, no test-only
   per-sc accessors — those live only in
-  `BackendArenaBinsTestAccess` in the test cc).
+  `ArenaBinsTestAccess` in the test cc).
 - Fast path uses runtime `bits::to_exp_mant` / `bits::clz` (not the
   `_const` variants); the `_const` variants are reachable only from
   the constexpr `BinTable` constructor and the test's
@@ -893,7 +893,7 @@ Add a single helper:
   returns `(largest entry < K, smallest entry > K)`. Either component
   is `Rep::null` when no such neighbour exists.
   **Precondition**: `K` is not present in the tree. This matches the
-  `BackendArena` use case (two free blocks cannot share a starting
+  `Arena` use case (two free blocks cannot share a starting
   address, so `add_block` only calls `neighbours` on addresses not
   already in the tree); in Debug an assert fires if `K` is encountered
   on the descent.
@@ -916,13 +916,13 @@ keys, and `K` between two consecutive keys all match the oracle; the
 "K not in tree" precondition is asserted in Debug; no structural
 changes to `RBTree`'s existing invariants.
 
-### Phase 3+4: Full BackendArena data structure (atomic)
+### Phase 3+4: Full Arena data structure (atomic)
 
-Create `src/snmalloc/backend_helpers/backend_arena.h` with:
+Create `src/snmalloc/backend_helpers/arena.h` with:
 
 - A `BackendArenaRep` concept describing word-level accessors over the
   three pagemap entries, the variant tag, and the large-size accessor:
-  - `get_variant(addr) -> BackendArenaVariant` / `set_variant`
+  - `get_variant(addr) -> ArenaVariant` / `set_variant`
   - `get_word1(addr)` / `set_word1`, `get_word2(addr)` / `set_word2`
     (first entry, used by BinRep)
   - `get_range_word1(addr)` / `set_range_word1`,
@@ -944,7 +944,7 @@ Create `src/snmalloc/backend_helpers/backend_arena.h` with:
   - Both: `compare(k1, k2) = k1 > k2` so `remove_min` returns the
     lowest address. `null = root = 0`.
 
-- `BackendArena<Rep, MIN_SIZE_BITS, MAX_SIZE_BITS>`:
+- `Arena<Rep, MIN_SIZE_BITS, MAX_SIZE_BITS>`:
   - `B = 2` hardcoded; `INTERMEDIATE_BITS` wiring deferred.
   - `MIN_SIZE_BITS` selects the unit of allocation (= pagemap stride
     when used with `PagemapRep`).
@@ -975,11 +975,11 @@ Create `src/snmalloc/backend_helpers/backend_arena.h` with:
 - `get_root_key()` added to `RBTree` (public method, returns root key
   or `Rep::null` when empty).
 
-- `Bitmap::test(size_t bin_id)` added to `BackendArenaBins` (read-only
+- `Bitmap::test(size_t bin_id)` added to `ArenaBins` (read-only
   accessor used by `invariant()`).
 
 Modifications to existing files:
-- `src/snmalloc/backend_helpers/backend_arena_bins.h`: added
+- `src/snmalloc/backend_helpers/arenabins.h`: added
   `Bitmap::test()` and made `bin_index` public.
 - `src/snmalloc/ds_core/redblacktree.h`: added `get_root_key()`.
 - `CMakeLists.txt`: added `backend_arena` to `TESTLIB_ONLY_TESTS`.
@@ -1006,9 +1006,9 @@ places it in bin 0 (size-1 servable set). But:
 2. `contains_min` probes bin 0 for single-chunk neighbours — finding
    a size-2 block there and treating it as size 1 corrupts metadata.
 
-All changes are in `backend_arena.h` and the test file.
+All changes are in `arena.h` and the test file.
 
-1. **Add `OddTwo = 3`** to `BackendArenaVariant` enum.
+1. **Add `OddTwo = 3`** to `ArenaVariant` enum.
 2. **Change `variant_of`** to take `(size_chunks, chunk_index)`:
    - size 1 → `Min`
    - size 2, even chunk → `TwoMin`
@@ -1019,7 +1019,7 @@ All changes are in `backend_arena.h` and the test file.
 4. **Update `insert_block`**: pass `addr_to_chunk(addr)` to `variant_of`.
    The `if (size_chunks >= 2)` range-tree checks already cover `OddTwo`.
 5. **Update `contains_min`**: after finding addr in bin 0, check
-   `Rep::get_variant(addr) == BackendArenaVariant::Min`. Return false
+   `Rep::get_variant(addr) == ArenaVariant::Min`. Return false
    for `OddTwo` entries.
 6. **Update invariant clause 5**: pass chunk address to `variant_of`.
 7. **Update invariant clause 1c** ("no two adjacent min blocks"):
@@ -1043,7 +1043,7 @@ entries when possible" section above.
 
 ### Phase 7: Multi-instance test
 
-Instantiate two `BackendArena<MockRep>` over disjoint address ranges in
+Instantiate two `Arena<MockRep>` over disjoint address ranges in
 the same test process, drive workloads against both, verify each
 invariant independently.
 
@@ -1062,29 +1062,29 @@ Per `claude.md` mandatory review checkpoints:
 
 ---
 
-# Implementation plan: BackendArenaRange phase
+# Implementation plan: LargeArenaRange phase
 
 ## Scope
 
-Build `BackendArenaRange` — a Range pipeline component that wraps
-`BackendArena` behind snmalloc's Range API, suitable for replacing
+Build `LargeArenaRange` — a Range pipeline component that wraps
+`Arena` behind snmalloc's Range API, suitable for replacing
 `LargeBuddyRange`. This plan covers:
 
-- Generalising BackendArena's Rep interface for pagemap compatibility.
-- `PagemapRep` — adapting pagemap entries to BackendArena's Rep concept.
-- `BackendArenaRange` — the Range wrapper with refill and overflow handling.
+- Generalising Arena's Rep interface for pagemap compatibility.
+- `PagemapRep` — adapting pagemap entries to Arena's Rep concept.
+- `LargeArenaRange` — the Range wrapper with refill and overflow handling.
 - Boundary-bit support for safe consolidation across PAL allocations.
 - Unit tests for all of the above.
 
 The pipeline integration (replacing `LargeBuddyRange` in `standard_range.h`
 and `meta_protected_range.h`) is a separate step ("Update backend to use
-BackendArenaRange") that follows once this plan is complete.
+LargeArenaRange") that follows once this plan is complete.
 
 ## Design
 
 ### Rep generalisation: representation-agnostic data structure
 
-`BackendArena` must be representation-agnostic, mirroring how
+`Arena` must be representation-agnostic, mirroring how
 `Buddy<>` is generic over its node `Rep` (see `buddy.h`). The
 existing buddy ecosystem demonstrates the layering:
 
@@ -1095,7 +1095,7 @@ existing buddy ecosystem demonstrates the layering:
 - `smallbuddyrange.h` defines `BuddyInplaceRep` — an inline Rep that
   stores tree pointers in the free chunk itself (red bit at bit 0).
 
-`BackendArena` must support the same two representation paths so it
+`Arena` must support the same two representation paths so it
 can eventually replace both `LargeBuddyRange` (pagemap) and
 `SmallBuddyRange` (inline) in the standard pipeline.
 
@@ -1115,16 +1115,16 @@ as `BuddyChunkRep` / `BuddyInplaceRep`): provides `Handle`,
 `Contents`, `null`, `root`, `ref`, `get`, `set`, `is_red`, `set_red`,
 `compare`, `equal`, `printable`, `name`. **All bit-packing decisions
 (red bit position, mask layout) are private to the Rep** —
-`BackendArena` carries no `RED_BIT` / `VARIANT_MASK` / `META_MASK`
+`Arena` carries no `RED_BIT` / `VARIANT_MASK` / `META_MASK`
 constants of its own.
 
-`BackendArena` instantiates `RBTree<typename Rep::BinRep>` and
+`Arena` instantiates `RBTree<typename Rep::BinRep>` and
 `RBTree<typename Rep::RangeRep>` directly. It never inspects the bit
 layout used by the Rep.
 
 #### PagemapRep
 
-Lives in `backend_arena_range.h`. Privately owns its bit layout:
+Lives in `largearenarange.h`. Privately owns its bit layout:
 
 - Bin tree node in pagemap entry at `addr`, Word::One/Two. `BinRep`
   packs the red bit at bit 8 and the variant tag at bits 9–10 of
@@ -1147,7 +1147,7 @@ their own ref/get/set/is_red/set_red implementations.
 Mirroring `BuddyInplaceRep`: tree pointers live inside the free
 memory itself. `BinRep` / `RangeRep` would use pointer-low-bits for
 red and variant tags. This is what enables a future
-`BackendArena`-based replacement for `SmallBuddyRange`.
+`Arena`-based replacement for `SmallBuddyRange`.
 
 ### Boundary-bit consolidation check
 
@@ -1156,7 +1156,7 @@ the pagemap sets a boundary bit on the first chunk of each PAL allocation
 to prevent consolidation across allocation boundaries
 (`BuddyChunkRep::can_consolidate` checks this).
 
-BackendArena's `add_block` consolidation must respect the same contract.
+Arena's `add_block` consolidation must respect the same contract.
 A new method on the Rep concept:
 
 ```
@@ -1176,7 +1176,7 @@ PagemapRep: returns `!get_metaentry_mut(higher_addr).is_boundary()`.
 
 Templated on `Pagemap`, `MIN_SIZE_BITS`, and `MAX_SIZE_BITS` (mirroring
 `Buddy`'s shape). `MIN_SIZE_BITS` is the log2 of the pagemap stride
-(snmalloc's `MIN_CHUNK_BITS` when wired through `BackendArenaRange`);
+(snmalloc's `MIN_CHUNK_BITS` when wired through `LargeArenaRange`);
 `MAX_SIZE_BITS` is needed for the large-size-shift static assertion:
 
 ```
@@ -1228,7 +1228,7 @@ an unowned entry, so pagemap ownership transitions happen implicitly.
 The boundary bit (bit 0 of `meta`) is in the reserved-mask zone and is
 preserved by both `claim_for_backend()` and `BackendStateWordRef::operator=`.
 
-### BackendArenaRange
+### LargeArenaRange
 
 Outer template matches `LargeBuddyRange`'s shape so it is a drop-in
 replacement in `Pipe<...>` compositions:
@@ -1239,7 +1239,7 @@ template<
   size_t MAX_SIZE_BITS,
   SNMALLOC_CONCEPT(IsWritablePagemap) Pagemap,
   size_t MIN_REFILL_SIZE_BITS = 0>
-class BackendArenaRange
+class LargeArenaRange
 {
 public:
   template<typename ParentRange = EmptyRange<>>
@@ -1248,7 +1248,7 @@ public:
     using ContainsParent<ParentRange>::parent;
 
     using PagemapRepT = PagemapRep<Pagemap, MIN_CHUNK_BITS, MAX_SIZE_BITS>;
-    BackendArena<PagemapRepT, MIN_CHUNK_BITS, MAX_SIZE_BITS> arena;
+    Arena<PagemapRepT, MIN_CHUNK_BITS, MAX_SIZE_BITS> arena;
     size_t requested_total = 0;
 
   public:
@@ -1296,7 +1296,7 @@ public:
 
 Overflow from `add_block` is forwarded directly to the parent's
 `dealloc_range`. The parent does not require power-of-two input — all
-non-Buddy ranges accept any chunk-aligned size, and `BackendArenaRange`
+non-Buddy ranges accept any chunk-aligned size, and `LargeArenaRange`
 itself accepts any chunk-multiple size — so no decomposition is needed.
 
 ```
@@ -1370,7 +1370,7 @@ Safety guards (both from `LargeBuddyRange`):
 
 ### Static properties
 
-- `Aligned = true`: BackendArena's carving ensures that a request of
+- `Aligned = true`: Arena's carving ensures that a request of
   size `n` (power-of-two, chunk-aligned) is placed at an `n`-aligned
   address within the source block. For non-power-of-two requests, the
   bin scheme's alignment rules still hold (alignment matches the
@@ -1381,7 +1381,7 @@ Safety guards (both from `LargeBuddyRange`):
 ### MAX_SIZE_BITS = BITS - 1 (global range)
 
 The global `LargeBuddyRange` uses `MAX_SIZE_BITS = BITS - 1`, meaning
-the buddy can hold up to half the address space. For BackendArenaRange:
+the buddy can hold up to half the address space. For LargeArenaRange:
 the maximum block size in chunks is `2^(MAX_SIZE_BITS - MIN_CHUNK_BITS)`.
 On 64-bit with `MIN_CHUNK_BITS = 14`, this gives a chunk-bit width of
 49 — the arena can hold up to 2^49 chunks. The arena's overflow path
@@ -1400,12 +1400,12 @@ where this would overflow.
 
 **Status**: implemented; staged (not committed); awaiting review.
 
-Changes to `backend_arena.h`:
+Changes to `arena.h`:
 
 1. Delete the private `WordRef` nested struct, the `TreeRep`
    template, and all bit-layout constants
    (`RED_BIT`/`VARIANT_MASK`/`META_MASK` and `BACKEND_RESERVED_MASK`).
-   `BackendArena` is now representation-agnostic, mirroring how
+   `Arena` is now representation-agnostic, mirroring how
    `buddy.h` is generic over its node `Rep`.
 2. Replace the internal `using BinRep = TreeRep<Rep::ref_word>` /
    `RangeRep = TreeRep<Rep::ref_range_word>` aliases with direct use
@@ -1434,10 +1434,10 @@ Changes to `backend_arena.cc` (test file):
    that boundary. Test both predecessor and successor merges being
    independently blocked.
 
-**Test gate**: all existing BackendArena tests pass unchanged; new
+**Test gate**: all existing Arena tests pass unchanged; new
 boundary test passes.
 
-### Phase 10: PagemapRep + BackendArenaRange + tests
+### Phase 10: PagemapRep + LargeArenaRange + tests
 
 **Status**: implemented and tested. Committed in `9c1ca745`.
 
@@ -1450,10 +1450,10 @@ boundary test passes.
 > implementation uses bytes; where they say `dealloc_overflow`, the
 > implementation uses `parent_dealloc`.
 
-**Phase 10b refactor (also implemented):** `BackendArena` and `PagemapRep`
+**Phase 10b refactor (also implemented):** `Arena` and `PagemapRep`
 were both retemplated to mirror `Buddy`'s 3-parameter shape:
 
-- `template<typename Rep, size_t MIN_SIZE_BITS, size_t MAX_SIZE_BITS> class BackendArena`
+- `template<typename Rep, size_t MIN_SIZE_BITS, size_t MAX_SIZE_BITS> class Arena`
   — the always-zero `MIN_CHUNKS_BITS` placeholder is gone, and the unit
   of allocation is named explicitly via `MIN_SIZE_BITS` instead of being
   implicitly tied to snmalloc's global `MIN_CHUNK_BITS`. Internally,
@@ -1465,30 +1465,30 @@ were both retemplated to mirror `Buddy`'s 3-parameter shape:
   `(MAX_SIZE_BITS - MIN_SIZE_BITS) + LARGE_SIZE_SHIFT <= bits::BITS`;
   `LARGE_SIZE_SHIFT` is private. The Rep's pagemap stride is
   `UNIT_SIZE = 1 << MIN_SIZE_BITS`.
-- `BackendArenaRange::Type` wires snmalloc's `MIN_CHUNK_BITS` as
-  `MIN_SIZE_BITS` for both PagemapRep and BackendArena:
+- `LargeArenaRange::Type` wires snmalloc's `MIN_CHUNK_BITS` as
+  `MIN_SIZE_BITS` for both PagemapRep and Arena:
   `PagemapRep<Pagemap, MIN_CHUNK_BITS, MAX_SIZE_BITS>` and
-  `BackendArena<PagemapRepT, MIN_CHUNK_BITS, MAX_SIZE_BITS>`.
+  `Arena<PagemapRepT, MIN_CHUNK_BITS, MAX_SIZE_BITS>`.
 
-New file: `src/snmalloc/backend_helpers/backend_arena_range.h`
+New file: `src/snmalloc/backend_helpers/largearenarange.h`
 
 1. `PagemapRep<Pagemap, MIN_SIZE_BITS, MAX_SIZE_BITS>` — full Rep
    implementation using pagemap entries as described above, with all
    static assertions.
-2. `BackendArenaRange<REFILL_SIZE_BITS, MAX_SIZE_BITS, Pagemap,
+2. `LargeArenaRange<REFILL_SIZE_BITS, MAX_SIZE_BITS, Pagemap,
    MIN_REFILL_SIZE_BITS>` — the Range wrapper with `alloc_range`,
    `dealloc_range`, `refill`, and `dealloc_overflow`.
 
 Modified: `src/snmalloc/backend_helpers/backend_helpers.h`
 
-3. Add `#include "backend_arena_range.h"` so the new header is
+3. Add `#include "largearenarange.h"` so the new header is
    available through the standard include path.
 
 New file: `src/test/func/backend_arena_range/backend_arena_range.cc`
 
 4. Test with snmalloc's `BasicPagemap` (or a test-appropriate pagemap):
    - PagemapRep word round-trips (variant, tree words, large size).
-   - BackendArenaRange `alloc_range` / `dealloc_range` smoke test with
+   - LargeArenaRange `alloc_range` / `dealloc_range` smoke test with
      a simple parent range.
    - Refill: verify that allocating when the arena is empty triggers a
      parent refill and returns memory.
@@ -1509,7 +1509,7 @@ Modified: `CMakeLists.txt`
 
 5. Register `backend_arena_range` in `TESTLIB_ONLY_TESTS`.
 
-**Test gate**: BackendArenaRange tests pass; existing tests unaffected.
+**Test gate**: LargeArenaRange tests pass; existing tests unaffected.
 
 ### Phase 11: Final review
 
@@ -1523,22 +1523,22 @@ Per `claude.md` mandatory review checkpoints:
 ### Phase 10d: Bytes throughout (replace chunk-count internal API)
 
 **Goal**: drop the `size_chunks` / chunk-count internal convention from
-`BackendArena` and `PagemapRep` so byte sizes (multiples of UNIT_SIZE)
+`Arena` and `PagemapRep` so byte sizes (multiples of UNIT_SIZE)
 flow end-to-end, removing the `<< MIN_CHUNK_BITS` conversion dance at
-the BackendArenaRange ↔ BackendArena boundary and the matching reverse
+the LargeArenaRange ↔ Arena boundary and the matching reverse
 shifts inside the range wrapper.
 
-**Substep 1 (DONE)**: generalise `BackendArenaBins` on a new
+**Substep 1 (DONE)**: generalise `ArenaBins` on a new
 `MIN_SIZE_BITS` template parameter so its `range_t.size`, carve
 arguments, and `max_supported_size()` are byte sizes (multiples of
 `UNIT_SIZE = 1 << MIN_SIZE_BITS`). Renames inside Bins:
 `size_chunks → size`, `align_chunks → align`, `max_supported_chunks
 → max_supported_size`. Tests cover `MIN_SIZE_BITS ∈ {0, 4, 14}`.
 
-**Substep 2 (DONE)**: flip `BackendArena`, `PagemapRep`, and
-`BackendArenaRange` to bytes throughout:
-- `BackendArena<Rep, MIN_SIZE_BITS, MAX_SIZE_BITS>` now uses
-  `BackendArenaBins<B, MIN_SIZE_BITS>`; `add_block` / `remove_block`
+**Substep 2 (DONE)**: flip `Arena`, `PagemapRep`, and
+`LargeArenaRange` to bytes throughout:
+- `Arena<Rep, MIN_SIZE_BITS, MAX_SIZE_BITS>` now uses
+  `ArenaBins<B, MIN_SIZE_BITS>`; `add_block` / `remove_block`
   take/return bytes; `addr_to_chunk` / `chunk_to_addr` / `CHUNKS_BITS`
   deleted; `variant_of(size, addr)` works in byte units with
   parity from `(addr >> MIN_SIZE_BITS) & 1`.
@@ -1548,7 +1548,7 @@ arguments, and `max_supported_size()` are byte sizes (multiples of
 - `PagemapRep::get_large_size` / `set_large_size` (renamed from
   `*_chunks`) take and return bytes; internal storage still scales
   by `MIN_SIZE_BITS` so the shifted field fits a pagemap word.
-- `BackendArenaRange::add_range` / `dealloc_range` /
+- `LargeArenaRange::add_range` / `dealloc_range` /
   `parent_dealloc` (unified from `parent_dealloc_range` and
   `dealloc_overflow`) drop chunk-count conversions; `add_range`
   uses `bits::align_up` / `bits::align_down`.
@@ -1564,19 +1564,19 @@ before opening a PR; then proceed to Phase 12 (pipeline integration).
 
 *Pipeline integration (replacing `LargeBuddyRange` in `standard_range.h`
 and `meta_protected_range.h`) is a separate follow-up plan: "Update
-backend to use BackendArenaRange."*
+backend to use LargeArenaRange."*
 
 ## Files added / changed (anticipated, this phase)
 
-- Modified: `src/snmalloc/backend_helpers/backend_arena.h` —
+- Modified: `src/snmalloc/backend_helpers/arena.h` —
   representation-agnostic: delete private `WordRef`, `TreeRep`, and
   all bit-layout constants (`RED_BIT`/`VARIANT_MASK`/`META_MASK`/
   reserved); use `Rep::BinRep` and `Rep::RangeRep` directly;
   `can_consolidate` check in `add_block`; invariant clauses updated.
-- New: `src/snmalloc/backend_helpers/backend_arena_range.h` —
-  `PagemapRep` + `BackendArenaRange`.
+- New: `src/snmalloc/backend_helpers/largearenarange.h` —
+  `PagemapRep` + `LargeArenaRange`.
 - Modified: `src/snmalloc/backend_helpers/backend_helpers.h` — include
-  `backend_arena_range.h`.
+  `largearenarange.h`.
 - Modified: `src/test/func/backend_arena/backend_arena.cc` — define
   `BackendArenaWordRef` test helper at top of file; MockRep updated
   (`BackendArenaWordRef` returns, `can_consolidate`); boundary tests.
@@ -1586,7 +1586,7 @@ backend to use BackendArenaRange."*
 
 ## Key design decisions
 
-1. **Representation-agnostic data structure** — `BackendArena`
+1. **Representation-agnostic data structure** — `Arena`
    carries no bit-layout constants. All red/variant packing decisions
    live in the user-supplied `Rep::BinRep` / `Rep::RangeRep`, matching
    how `BuddyChunkRep` and `BuddyInplaceRep` each own their own
@@ -1596,13 +1596,13 @@ backend to use BackendArenaRange."*
 2. **PagemapRep variant in bin-tree Word::One** — PagemapRep packs
    the variant tag at bits 9–10 of Word::One alongside the red bit
    (bit 8) and child pointer (bits ≥ MIN_CHUNK_BITS). These are
-   private constants inside PagemapRep, not exposed by BackendArena.
+   private constants inside PagemapRep, not exposed by Arena.
 
 3. **Large size stored shifted** — PagemapRep stores the chunk count
    as `count << 8` to avoid the pagemap's reserved low byte; recovered
    via `>> 8`. Guarded by `static_assert((MAX_SIZE_BITS - MIN_CHUNK_BITS) + 8 <= bits::BITS)`.
 
-4. **Boundary checks in BackendArena** — not in BackendArenaRange.
+4. **Boundary checks in Arena** — not in LargeArenaRange.
    Consolidation decisions happen inside `add_block`, so the boundary
    check must be there. The Rep concept cleanly abstracts this via
    `can_consolidate`.
@@ -1614,13 +1614,13 @@ backend to use BackendArenaRange."*
 
 6. **PagemapRep auto-claims entries** — `get_backend_word` calls
    `claim_for_backend()` on first access. No explicit ownership
-   management needed in BackendArena or BackendArenaRange.
+   management needed in Arena or LargeArenaRange.
 
 7. **Overflow forwarding** — `add_block` overflow may produce non-
    power-of-two sizes (consolidated blocks from multiple PAL allocs).
    `dealloc_overflow` forwards the overflow directly to the parent's
    `dealloc_range`; no power-of-two decomposition is needed because
-   `BackendArenaRange` (which is what replaces `LargeBuddyRange` in
+   `LargeArenaRange` (which is what replaces `LargeBuddyRange` in
    the pipeline) accepts any chunk-multiple size.
 
 8. **`BackendArenaWordRef` lives in the test file** — the in-tree
@@ -1644,7 +1644,7 @@ backend to use BackendArenaRange."*
 - Overflow handling: `add_block` can return non-power-of-two sizes when
   blocks from multiple PAL allocations consolidate. `dealloc_overflow`
   forwards the overflow directly to the parent — no decomposition is
-  required because `BackendArenaRange` itself accepts arbitrary
+  required because `LargeArenaRange` itself accepts arbitrary
   chunk-multiple sizes and replaces `LargeBuddyRange` in the pipeline.
   (Rubber-duck finding #2 superseded by Option B refactor.)
 - Handle visibility / layering: original plan promoted bit-layout
@@ -1652,7 +1652,7 @@ backend to use BackendArenaRange."*
   the in-tree header and tests could share them. Subsequent review
   observed that this broke the Buddy/`BuddyChunkRep`/`BuddyInplaceRep`
   layering: the data structure should be representation-agnostic.
-  Resolved by making `BackendArena` carry no bit-layout state and
+  Resolved by making `Arena` carry no bit-layout state and
   requiring `Rep::BinRep` / `Rep::RangeRep` to own all packing
   decisions. `PagemapRep` keeps its layout private; the
   test `BackendArenaWordRef` lives in the test file alongside MockRep.
@@ -1671,18 +1671,18 @@ backend to use BackendArenaRange."*
 
 ---
 
-## Files added / changed (BackendArena phase, completed)
+## Files added / changed (Arena phase, completed)
 
-- New: `src/snmalloc/backend_helpers/backend_arena_bins.h` —
+- New: `src/snmalloc/backend_helpers/arenabins.h` —
   `range_t`, `carve_t`, `carve`, `max_supported_chunks`, and nested
   `Bitmap` with `add` / `find_for_request` / `clear` (public surface);
   the size-class encoding (`bitmap_info_t`, `carve_info_t`, constexpr
   `BinTable`, `bitmap_info_for_request` / `carve_info_for_request`,
   `bin_index`) is private and reachable via
-  `BackendArenaBinsTestAccess` (forward-declared in the header,
+  `ArenaBinsTestAccess` (forward-declared in the header,
   defined in the test cc) for unit tests. Templated on
   `INTERMEDIATE_BITS` for testability.
-- New: `src/snmalloc/backend_helpers/backend_arena.h` — the data structure,
+- New: `src/snmalloc/backend_helpers/arena.h` — the data structure,
   templated on a `BackendArenaRep` concept exposing variant-tag and
   node/size accessors (no pagemap-probing API).
 - New: `src/test/func/backend_arena_bins/backend_arena_bins.cc` — bin
@@ -1704,18 +1704,18 @@ No in-tree code path is changed in this phase: the existing
 
 - One Bin tree per IDEA servable-set bin (not per size class or per
   exponent).
-- Scope is the BackendArena data structure + tests only.
+- Scope is the Arena data structure + tests only.
 - The pagemap encoding carries a 2-bit **variant tag**
   (`Min` / `TwoMin` / `Large`) on the first entry of each free block.
   Tree membership — not the tag — is the source of truth for "is this
   block free?". No transient `BackendOwned` / "claimed" tag is required.
 - **No pagemap probing.** All adjacency lookups are restricted to this
-  `BackendArena`'s own RBTrees: non-min neighbours come from a single
+  `Arena`'s own RBTrees: non-min neighbours come from a single
   `Range.neighbours(addr_A)` walk that returns both
   `(largest < addr_A, smallest > addr_A)`; min-size neighbours come from
   `MinSizeBin.find(addr_A ± MIN_CHUNK_SIZE)`. The pagemap is never read
   at speculative addresses (concurrency hazard and no defined contract
-  for pagemap entries the BackendArena does not own).
+  for pagemap entries the Arena does not own).
 - Free blocks may have **arbitrary chunk counts**, not just exact
   size-class sizes — carving produces non-class remainders. `bin_index`
   operates on `(addr_chunks, size_chunks)` pairs; `Large` blocks store
@@ -1728,38 +1728,38 @@ No in-tree code path is changed in this phase: the existing
 - `add_block` returns `{0, 0}` on success; on overflow it returns the
   unabsorbed range, mirroring `Buddy::add_block`'s overflow-return
   contract. Oversize inputs (`size_chunks >= 2^(MAX_SIZE_BITS - MIN_CHUNK_BITS)`) bypass
-  `BackendArena` entirely — the wrapping `BackendArenaRange` layer
+  `Arena` entirely — the wrapping `LargeArenaRange` layer
   handles them before calling `add_block`, and `add_block` asserts
   `size_chunks < 2^(MAX_SIZE_BITS - MIN_CHUNK_BITS)`. The only overflow case is
   consolidation growing a coalesced block to exactly
   `2^(MAX_SIZE_BITS - MIN_CHUNK_BITS)` (the consolidated range is returned, neighbours
-  having been removed first). The future `BackendArenaRange` wrapper is
-  responsible for handling overflow; the standalone `BackendArena` only
+  having been removed first). The future `LargeArenaRange` wrapper is
+  responsible for handling overflow; the standalone `Arena` only
   exposes the contract.
 - `BackendArenaRep` is a chunk-keyed accessor concept (variant tag plus
-  word/size accessors for entries 1–3). `BackendArena` builds two
+  word/size accessors for entries 1–3). `Arena` builds two
   internal `RBTree`-Rep adapters (`BinRep`, `RangeRep`) over it; user
   code never sees the adapter shape.
 - Backend chunk size classes are a new chunk-unit size-class scheme in
-  `backend_arena_bins.h` (not bytes), independent of the
+  `arenabins.h` (not bytes), independent of the
   power-of-two-only large variant of front-end `sizeclass_t`, with
   low-exponent special cases handled in the spirit of
   `bits::from_exp_mant`.
-- `BackendArena<Rep, MIN_SIZE_BITS, MAX_SIZE_BITS>` uses byte-size
+- `Arena<Rep, MIN_SIZE_BITS, MAX_SIZE_BITS>` uses byte-size
   exponent bounds with **exclusive max** semantics, matching the existing
   `Buddy<..., MIN, MAX>`.
 - Multi-`B` testing is via a templated bin-table generator in a single
   test binary, not via separate CMake configurations.
 - Phase 5 verifies the reuse optimisation via Range-tree insert/remove
-  *call counters* at the `BackendArena` layer (no `RBTree` modification).
+  *call counters* at the `Arena` layer (no `RBTree` modification).
 
 ## Still open (resolve during implementation)
 
 - ~~Exact bit positions in the first-word pagemap encoding for the
   variant-tag field.~~ **Resolved** (Phase 3+4): bits 9–10 encode
-  `BackendArenaVariant` (`VARIANT_MASK = 0x600`); bit 8 is `RED_BIT`;
+  `ArenaVariant` (`VARIANT_MASK = 0x600`); bit 8 is `RED_BIT`;
   bits 0–7 are `BACKEND_RESERVED_MASK`. Documented in
-  `backend_arena.h`.
+  `arena.h`.
 - ~~Whether Bin tree roots are stored flat
   (`Array<Root, TOTAL_BINS>`) or exponent-keyed.~~ **Resolved**
   (Phase 3+4): flat `stl::Array<BinTree, Bins::Bitmap::TOTAL_BINS>`.
@@ -1771,25 +1771,25 @@ No in-tree code path is changed in this phase: the existing
 
 ---
 
-# Phase 12: Update backend to use BackendArenaRange
+# Phase 12: Update backend to use LargeArenaRange
 
 ## Status: implementation complete, awaiting commit approval
 
 Substitution implemented and tested in the working tree (uncommitted on
-top of `9c1ca745`). `BackendArena::add_block` had a latent
+top of `9c1ca745`). `Arena::add_block` had a latent
 out-of-region pagemap-probe bug in its successor-min branch that
-became reachable once `BackendArenaRange` started serving fixed-region
+became reachable once `LargeArenaRange` started serving fixed-region
 allocations; fixed in this phase (see "Issue found during Phase 12
 test run" below). Full ctest suite passes (86/86).
 
 Diff: 6 files, 183/45 +/- (PLAN.md, both pipeline range headers,
-`backend_arena.h`, `backend_arena_bins.h`, `backend_arena.cc`).
+`arena.h`, `arenabins.h`, `backend_arena.cc`).
 
 ## Goal
 
 Replace every `LargeBuddyRange` instantiation in the range
-pipelines with `BackendArenaRange`. After this phase, snmalloc uses
-the BackendArena bin-tree allocator instead of the power-of-two buddy
+pipelines with `LargeArenaRange`. After this phase, snmalloc uses
+the Arena bin-tree allocator instead of the power-of-two buddy
 for all large-range management. The `LargeBuddyRange` and
 `BuddyChunkRep` classes are **not deleted** — they remain available
 for alternative configurations and external embedders. Only the
@@ -1798,17 +1798,17 @@ default pipeline wiring changes.
 ## Scope
 
 - Modify `standard_range.h` — replace all `LargeBuddyRange` with
-  `BackendArenaRange` (same template parameters).
+  `LargeArenaRange` (same template parameters).
 - Modify `meta_protected_range.h` — replace all `LargeBuddyRange`
-  with `BackendArenaRange` (same template parameters).
-- **No other source files change.** `BackendArenaRange` is already a
+  with `LargeArenaRange` (same template parameters).
+- **No other source files change.** `LargeArenaRange` is already a
   drop-in replacement: same template signature, same `Type<Parent>`
   shape, same `alloc_range`/`dealloc_range` API, same `Aligned`,
   `ConcurrencySafe`, and `ChunkBounds` constants.
 
 ## Pre-conditions
 
-- Phase 10 (BackendArenaRange) is committed and all its tests pass
+- Phase 10 (LargeArenaRange) is committed and all its tests pass
   (commit `9c1ca745`).
 - Phase 11 (final review of Phases 9–10) was waived by the user;
   Phase 12 proceeds without it.
@@ -1823,15 +1823,15 @@ default pipeline wiring changes.
 ```cpp
 LargeBuddyRange<GlobalCacheSizeBits, bits::BITS - 1, Pagemap, MinSizeBits>
 ```
-→ `BackendArenaRange<GlobalCacheSizeBits, bits::BITS - 1, Pagemap, MinSizeBits>`
+→ `LargeArenaRange<GlobalCacheSizeBits, bits::BITS - 1, Pagemap, MinSizeBits>`
 
 - `MAX_SIZE_BITS = bits::BITS - 1` → global-range mode (no parent
-  dealloc). `BackendArenaRange` handles this identically.
+  dealloc). `LargeArenaRange` handles this identically.
 - `MIN_REFILL_SIZE_BITS = MinSizeBits` (Windows: 16, otherwise PAL-
-  dependent). `BackendArenaRange` passes this through.
+  dependent). `LargeArenaRange` passes this through.
 - Parent is `Base` (PalRange + PagemapRegisterRange chain). Parent is
   **unaligned** on PALs without `AlignedAllocation` (e.g. Linux mmap)
-  and aligned otherwise. `BackendArenaRange::refill` currently still
+  and aligned otherwise. `LargeArenaRange::refill` currently still
   carries the aligned/unaligned dual path inherited from
   `LargeBuddyRange`; collapsing this into a single path is deferred to
   Phase 13.
@@ -1840,13 +1840,13 @@ LargeBuddyRange<GlobalCacheSizeBits, bits::BITS - 1, Pagemap, MinSizeBits>
 ```cpp
 LargeBuddyRange<LocalCacheSizeBits, LocalCacheSizeBits, Pagemap, page_size_bits>
 ```
-→ `BackendArenaRange<LocalCacheSizeBits, LocalCacheSizeBits, Pagemap, page_size_bits>`
+→ `LargeArenaRange<LocalCacheSizeBits, LocalCacheSizeBits, Pagemap, page_size_bits>`
 
 - `MAX_SIZE_BITS = LocalCacheSizeBits = 21` (2 MiB). Non-global mode.
   Overflow goes to parent.
-- `BackendArenaRange::parent_dealloc` forwards directly to parent
+- `LargeArenaRange::parent_dealloc` forwards directly to parent
   without decomposition (single block returned by
-  `BackendArena::add_block` when consolidation reaches the arena-scale
+  `Arena::add_block` when consolidation reaches the arena-scale
   upper bound). The size is a chunk multiple up to `2^MAX_SIZE_BITS`,
   not necessarily power-of-two — the parent must accept arbitrary
   chunk-multiple sizes.
@@ -1860,7 +1860,7 @@ LargeBuddyRange<LocalCacheSizeBits, LocalCacheSizeBits, Pagemap, page_size_bits>
 ```cpp
 LargeBuddyRange<GlobalCacheSizeBits, bits::BITS - 1, Pagemap>
 ```
-→ `BackendArenaRange<GlobalCacheSizeBits, bits::BITS - 1, Pagemap>`
+→ `LargeArenaRange<GlobalCacheSizeBits, bits::BITS - 1, Pagemap>`
 
 - `MIN_REFILL_SIZE_BITS = 0` (default). Global-range mode.
 
@@ -1868,7 +1868,7 @@ LargeBuddyRange<GlobalCacheSizeBits, bits::BITS - 1, Pagemap>
 ```cpp
 LargeBuddyRange<GlobalCacheSizeBits, bits::BITS - 1, Pagemap, page_size_bits>
 ```
-→ `BackendArenaRange<GlobalCacheSizeBits, bits::BITS - 1, Pagemap, page_size_bits>`
+→ `LargeArenaRange<GlobalCacheSizeBits, bits::BITS - 1, Pagemap, page_size_bits>`
 
 - Global-range mode.
 
@@ -1881,7 +1881,7 @@ stl::conditional_t<
     Pagemap, page_size_bits>,
   NopRange>
 ```
-→ Replace `LargeBuddyRange` with `BackendArenaRange` inside the
+→ Replace `LargeBuddyRange` with `LargeArenaRange` inside the
   `conditional_t`.
 
 - This is a small local cache for huge-page consolidation.
@@ -1895,7 +1895,7 @@ stl::conditional_t<
 ```cpp
 LargeBuddyRange<LocalCacheSizeBits, LocalCacheSizeBits, Pagemap, page_size_bits>
 ```
-→ `BackendArenaRange<LocalCacheSizeBits, LocalCacheSizeBits, Pagemap, page_size_bits>`
+→ `LargeArenaRange<LocalCacheSizeBits, LocalCacheSizeBits, Pagemap, page_size_bits>`
 
 - Same shape as standard_range.h #2.
 
@@ -1903,7 +1903,7 @@ LargeBuddyRange<LocalCacheSizeBits, LocalCacheSizeBits, Pagemap, page_size_bits>
 ```cpp
 LargeBuddyRange<LocalCacheSizeBits - SubRangeRatioBits, bits::BITS - 1, Pagemap>
 ```
-→ `BackendArenaRange<LocalCacheSizeBits - SubRangeRatioBits, bits::BITS - 1, Pagemap>`
+→ `LargeArenaRange<LocalCacheSizeBits - SubRangeRatioBits, bits::BITS - 1, Pagemap>`
 
 - `REFILL_SIZE_BITS = 21 - 6 = 15`. Global-range mode.
   `MIN_REFILL_SIZE_BITS = 0`.
@@ -1911,10 +1911,10 @@ LargeBuddyRange<LocalCacheSizeBits - SubRangeRatioBits, bits::BITS - 1, Pagemap>
 ## Implementation
 
 The change is a mechanical text substitution — replace the string
-`LargeBuddyRange` with `BackendArenaRange` in both files. No
+`LargeBuddyRange` with `LargeArenaRange` in both files. No
 template parameters, no API calls, no structural changes.
 
-### Step 1: Replace LargeBuddyRange → BackendArenaRange
+### Step 1: Replace LargeBuddyRange → LargeArenaRange
 
 In `src/snmalloc/backend/standard_range.h`:
 - 2 instantiations of `LargeBuddyRange<` (GlobalR, LargeObjectRange).
@@ -1928,7 +1928,7 @@ In `src/snmalloc/backend/meta_protected_range.h`:
 
 Both files include `"../backend/backend.h"` which includes
 `"../backend_helpers/backend_helpers.h"` which already includes
-`"backend_arena_range.h"`. **No new includes needed.**
+`"largearenarange.h"`. **No new includes needed.**
 
 ### Step 3: Build and test
 
@@ -1948,14 +1948,14 @@ test suite exercises the pipeline end-to-end.
 ### Issue found during Phase 12 test run: out-of-region pagemap probe
 
 `func-fixed_region_alloc-check` segfaulted in `PagemapRep::can_consolidate`
-when `BackendArena::add_block` was called with a block whose
+when `Arena::add_block` was called with a block whose
 `succ_addr = addr + size` sat one chunk past the registered pagemap
 range (the last 8 MiB of a 256 MiB FixedRange). The bug shape matches
 the `buddy.h:90-93` comment exactly: `can_consolidate` reads the
 pagemap entry at `succ_addr`, and that read is only safe once a
 tree-membership test has confirmed the address is in our region.
 
-**Fix.** In `BackendArena::add_block`, the successor-min branch was
+**Fix.** In `Arena::add_block`, the successor-min branch was
 reordered so the tree-membership check (`contains_min(succ_addr)`)
 short-circuits before the pagemap probe (`Rep::can_consolidate`).
 All other can_consolidate call sites already had their preconditions
@@ -1979,7 +1979,7 @@ This unification also subsumed the previous `BoundaryMockRep` and its
 run on `Arena<K>` and set `mock_store[mock_index(addr)].boundary = true`
 instead. Net −35 lines in `backend_arena.cc`.
 
-A leftover `throw "..."` in `backend_arena_bins.h:807` (used as a
+A leftover `throw "..."` in `arenabins.h:807` (used as a
 constexpr-failure trick in the `BinTable` constructor) caused a build
 failure in `-fno-exceptions` configurations during Phase 12. Replaced
 with `SNMALLOC_CHECK(false && "...")`, which is non-constexpr and
@@ -2003,7 +2003,7 @@ Phase 12 ends after Step 3 with the test suite green.
 ## Investigated and dropped: Retire `ParentRange::Aligned`
 
 **Status: dropped on review.** Phase 13 was deferred from Phase 12 with
-the intent of collapsing `BackendArenaRange::refill`'s two-path
+the intent of collapsing `LargeArenaRange::refill`'s two-path
 conditional and (optionally) removing `ParentRange::Aligned` from the
 range concept. Closer inspection of the existing code found the
 conditional is load-bearing, not vestigial:
@@ -2035,11 +2035,11 @@ conditional is load-bearing, not vestigial:
   pass-through ranges doesn't shrink — defeating the only
   structural-cleanup motivation.
 
-The BackendArena refactor (Phases 1–12) ends with Phase 12. No Phase 13.
+The Arena refactor (Phases 1–12) ends with Phase 12. No Phase 13.
 
 ## Risks
 
-1. **BackendArenaRange behaviour differences.** The bin-tree allocator
+1. **LargeArenaRange behaviour differences.** The bin-tree allocator
    returns blocks with different internal fragmentation characteristics
    than the power-of-two buddy. Functionally, the caller always gets
    at least the requested size (power-of-two), so correctness is
@@ -2048,19 +2048,19 @@ The BackendArena refactor (Phases 1–12) ends with Phase 12. No Phase 13.
 
 2. **Overflow behaviour.** `LargeBuddyRange::dealloc_overflow` returns
    a single block of exactly `1 << MAX_SIZE_BITS`.
-   `BackendArenaRange::parent_dealloc` forwards a single block of the
+   `LargeArenaRange::parent_dealloc` forwards a single block of the
    consolidated size directly to the parent. The size can be any
    chunk multiple up to `2^MAX_SIZE_BITS`, not just power-of-two, but
-   the parent (now itself a `BackendArenaRange` or pass-through layer)
+   the parent (now itself a `LargeArenaRange` or pass-through layer)
    accepts arbitrary chunk-multiple sizes.
 
 3. **`FixedRangeConfig` uses `StandardLocalState`.** The fixed-region
    configuration pushes memory directly into `GlobalR.dealloc_range`.
-   This works with `BackendArenaRange` because `dealloc_range` has the
+   This works with `LargeArenaRange` because `dealloc_range` has the
    same signature and contract.
 
-4. **Pagemap metadata footprint.** `BackendArenaRange` uses up to
-   three pagemap entries per free block (`backend_arena_range.h:12-17`)
+4. **Pagemap metadata footprint.** `LargeArenaRange` uses up to
+   three pagemap entries per free block (`largearenarange.h:12-17`)
    — one at the base, one at `base + UNIT_SIZE`, one at
    `base + 2*UNIT_SIZE`. `LargeBuddyRange`'s `BuddyChunkRep` only
    touched the base entry. Pagemap registration covers every
@@ -2071,14 +2071,14 @@ The BackendArena refactor (Phases 1–12) ends with Phase 12. No Phase 13.
 
 ## Resolved during plan review
 
-- `backend_arena_range.h` was missing `#include "empty_range.h"` for
+- `largearenarange.h` was missing `#include "empty_range.h"` for
   its `EmptyRange<>` default template parameter. Fixed pre-commit.
   (Rubber-duck finding #2.)
 - The `conditional_t` huge-page path in `meta_protected_range.h` may
   not be instantiated on default builds. CI tests multiple PAL
   configurations. Risk acknowledged but no custom build added — the
   conditional branch is structurally identical to other
-  `BackendArenaRange` uses and shares the same template. (Rubber-duck
+  `LargeArenaRange` uses and shares the same template. (Rubber-duck
   finding #1.)
 
 ## Out of scope
@@ -2303,11 +2303,11 @@ above the reserved range must shift up by
 Verified consumers of `BACKEND_RESERVED_MASK` / bits immediately
 above bit 7:
 
-- `backend_arena_range.h:42-50`: `RED_BIT_POS = 8`,
+- `largearenarange.h:42-50`: `RED_BIT_POS = 8`,
   `VARIANT_SHIFT = 9`, `LARGE_SIZE_SHIFT = 8`. Today these sit at
   bits 8/9-10/8. After Phase 13 they shift to bits 9/10-11/9. The
   `static_assert(Entry::is_backend_allowed_value(...))` at
-  `backend_arena_range.h:64-66` catches any miss at compile time.
+  `largearenarange.h:64-66` catches any miss at compile time.
 - `backend_helpers/largebuddyrange.h:40-46`: `BuddyChunkRep`
   `RED_BIT = 1 << 8`. Same shift required. (The plan previously
   said "`backend_helpers/buddy.h`" — corrected. Grep `RED_BIT` to
@@ -2400,7 +2400,7 @@ auto-propagates.
   to use `meta.slab_mask`. The metadata table builder sets
   `slab_mask = info.align - 1` for large (where
   `info.align = size & (~size + 1)`, the natural alignment from
-  `backend_arena_bins.h:741`). For pow2 sizes, `info.align == size`,
+  `arenabins.h:741`). For pow2 sizes, `info.align == size`,
   so `slab_mask = size - 1` — matching today's value. For
   non-pow2 sizes (table-populated but unreachable in Phase 13),
   `slab_mask = info.align - 1 < size - 1`. Phase 14 adds the
@@ -2429,7 +2429,7 @@ auto-propagates.
   /**
    * Bit position of the first bit available to backend metadata
    * layouts above the reserved region. Used by
-   * `backend_arena_range.h` and `largebuddyrange.h` to derive
+   * `largearenarange.h` and `largebuddyrange.h` to derive
    * RED_BIT_POS, VARIANT_SHIFT, and LARGE_SIZE_SHIFT.
    */
   static constexpr size_t BACKEND_LAYOUT_FIRST_FREE_BIT =
@@ -2438,17 +2438,17 @@ auto-propagates.
   The `+1` reserves `REMOTE_BACKEND_MARKER`'s own bit (it lives at
   `next_pow2_bits_const(REMOTE_BACKEND_MARKER)`).
 
-### `src/snmalloc/backend_helpers/backend_arena_range.h` and `src/snmalloc/backend_helpers/largebuddyrange.h`
+### `src/snmalloc/backend_helpers/largearenarange.h` and `src/snmalloc/backend_helpers/largebuddyrange.h`
 
 - Replace hard-coded `RED_BIT_POS = 8`, `VARIANT_SHIFT = 9`,
-  `LARGE_SIZE_SHIFT = 8` in `backend_arena_range.h` with
+  `LARGE_SIZE_SHIFT = 8` in `largearenarange.h` with
   derivations from the new public
   `MetaEntryBase::BACKEND_LAYOUT_FIRST_FREE_BIT`:
   `RED_BIT_POS = MetaEntryBase::BACKEND_LAYOUT_FIRST_FREE_BIT;`
   `LARGE_SIZE_SHIFT = MetaEntryBase::BACKEND_LAYOUT_FIRST_FREE_BIT;`
   `VARIANT_SHIFT = MetaEntryBase::BACKEND_LAYOUT_FIRST_FREE_BIT + 1;`
   (the `+1` reserves the RED bit).
-- `backend_arena_range.h:64-66` `static_assert` continues to enforce
+- `largearenarange.h:64-66` `static_assert` continues to enforce
   no clash with reserved bits.
 - `largebuddyrange.h:40-46`: `BuddyChunkRep::RED_BIT = 1 << 8`.
   Replace with `1 << MetaEntryBase::BACKEND_LAYOUT_FIRST_FREE_BIT`.
@@ -2536,12 +2536,12 @@ caller path skips the bound check.
 
 1. **Build**: clean build of the default config passes. The
    `static_assert(Entry::is_backend_allowed_value(...))` checks at
-   `backend_arena_range.h:64-66` catch any bit-layout mismatch.
+   `largearenarange.h:64-66` catch any bit-layout mismatch.
 2. **Full ctest suite**: all existing tests pass (no behaviour
    regression — front-end still issues pow2 large requests, so
    non-pow2 large sizeclasses exist in tables but are unreachable
    from the API).
-3. **BackendArena unit tests** (`test_backend_arena`) continue to
+3. **Arena unit tests** (`test_backend_arena`) continue to
    pass — they exercise the shifted RED/variant bits in the pagemap
    encoding.
 4. **Extend `src/test/func/sizeclass/sizeclass.cc`** with a
@@ -2580,7 +2580,7 @@ caller path skips the bound check.
 
 1. **SIZECLASS_BITS widening cascades.** Caught by the existing
    `static_assert`s in `metadata.h:64-67` and
-   `backend_arena_range.h:64-66`.
+   `largearenarange.h:64-66`.
 2. **Some embedder set REMOTE_MIN_ALIGN tighter than chain allows.**
    Would surface as a compile-error on the cacheline-vs-REP_SIZE
    max. Address only if it actually fires.
@@ -2879,7 +2879,7 @@ expected ownership transition.
 `MetaEntryBase::BACKEND_LAYOUT_FIRST_FREE_BIT` is derived from
 `REMOTE_BACKEND_MARKER`; since the marker moves up by `OFFSET_BITS`,
 the backend's `RED_BIT`, `VARIANT_SHIFT`, `LARGE_SIZE_SHIFT`
-(`backend_arena_range.h:50-67`) auto-shift up by the same amount.
+(`largearenarange.h:50-67`) auto-shift up by the same amount.
 Verify the existing
 `static_assert((MAX_SIZE_BITS - MIN_SIZE_BITS) + LARGE_SIZE_SHIFT
 <= bits::BITS, ...)` still holds. For the default config:
@@ -3119,7 +3119,7 @@ those positions become bits 12, 13, 14 — and bit 14 collides with
 the `MIN_CHUNK_BITS = 14` unit-address packing in the backend's
 buddy-tree pointer storage, tripping the
 `BIN_META_MASK < UNIT_SIZE` assertion in
-`backend_arena_range.h:72`.
+`largearenarange.h:72`.
 
 Changes:
 
@@ -3136,7 +3136,7 @@ Changes:
     pass the mask into the `BackendStateWordRef` constructor and
     store it as a member; `get_backend_word(Word w)` selects the
     right mask at the call site.
-- `backend_arena_range.h`:
+- `largearenarange.h`:
   - Move `RED_BIT_POS` and `VARIANT_SHIFT` down to start at bit 1
     (just above `META_BOUNDARY_BIT`). `RED_BIT_POS = 1`,
     `VARIANT_SHIFT = 2`. `BIN_META_MASK = (1<<1) | (3<<2) = 14`.
@@ -3165,7 +3165,7 @@ NOT moved yet (still at SIZECLASS_REP_SIZE), so the layout
 change is invisible to allocation behaviour; only the
 relaxation of asserts and the lowered bit positions for
 RED/VARIANT/LARGE_SIZE_SHIFT differ. Run a focused build to
-re-trigger the static_asserts in `backend_arena_range.h` and
+re-trigger the static_asserts in `largearenarange.h` and
 confirm they all pass.
 
 ### Step 2: Marker move + ras encoding (no offset writers yet)
@@ -3183,7 +3183,7 @@ Changes:
   above). If any check fails, fix before continuing.
 
 **Gate**: clean build (the size-budget `static_assert` in
-`backend_arena_range.h` is the compile-time guard for the marker
+`largearenarange.h` is the compile-time guard for the marker
 shift). All existing tests still pass — every `ras` write still
 encodes with `offset = 0` (the new default arg), so every
 combined value still equals `sc.raw()`.
@@ -3302,7 +3302,7 @@ narrower `align_` rows (4-per-cache-line vs the baseline's
 1. **Build**: clean build passes. The new `static_assert` in
    `sizeclasstable.h` (max large slab index < `1 << OFFSET_BITS`)
    guards the OFFSET_BITS choice. The size-budget assert in
-   `backend_arena_range.h` (`(MAX_SIZE_BITS - MIN_SIZE_BITS) +
+   `largearenarange.h` (`(MAX_SIZE_BITS - MIN_SIZE_BITS) +
    LARGE_SIZE_SHIFT <= bits::BITS`) guards the upward shift of
    backend bits.
 2. **Full ctest suite**: all existing tests pass. Front-end still
@@ -3411,7 +3411,7 @@ narrower `align_` rows (4-per-cache-line vs the baseline's
    message-passing.
 2. **Backend bit budget.** `MAX_SIZE_BITS - MIN_SIZE_BITS +
    LARGE_SIZE_SHIFT <= bits::BITS` (the assert in
-   `backend_arena_range.h:68-70`). With `LARGE_SIZE_SHIFT`
+   `largearenarange.h:68-70`). With `LARGE_SIZE_SHIFT`
    auto-shifted up by `OFFSET_BITS`, default config goes from ~44
    to ~47 bits used, still ≤ 64. The assert is the gate.
 3. **Combined-index table size.** The combined-index `start_` table
@@ -3588,7 +3588,7 @@ After this commit lands, Phase 15 begins on top of it.
 Flip the front-end so that large allocations request exactly the
 sizeclass-encoded size (chunk-multiple, exp+mantissa-rounded),
 instead of always the next power of two. This is the long-running
-goal of the refactor: the backend (`BackendArenaRange`) has
+goal of the refactor: the backend (`LargeArenaRange`) has
 supported arbitrary chunk-multiple sizes since Phase 10–12, the
 sizeclass encoding has supported non-pow2 large since Phase 13,
 and the per-chunk offset machinery has supported pointer recovery
@@ -3636,9 +3636,9 @@ listed so reviewers can re-check):
 - The Phase 14 assert that `ras`'s offset bits are zero on entry
   to `alloc_chunk` continues to hold: front-end calls
   `PagemapEntry::encode(remote, sc)` with default `offset = 0`.
-- `BackendArenaBins::carve` returns a base aligned to
+- `ArenaBins::carve` returns a base aligned to
   `info.align = size & -size` (the largest pow2 divisor of size,
-  set in the bin-table ctor at `backend_arena_bins.h:742`). For a
+  set in the bin-table ctor at `arenabins.h:742`). For a
   96 KiB request that is 32 KiB = `slab_size` =
   `sizeclass_full_to_slab_size(sc)` — exactly what
   `start_of_object`'s `addr & ~slab_mask` requires.

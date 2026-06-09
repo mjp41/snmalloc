@@ -1,8 +1,8 @@
 /**
- * Unit tests for `InplaceRep` exercised through `BackendArena`.
+ * Unit tests for `InplaceRep` exercised through `Arena`.
  *
- * Distinct from the `backend_arena` test (which uses an array-backed
- * MockRep): here the Rep is the production in-band representation,
+ * Distinct from the `arena` test (which uses an array-backed
+ * MockRep): here the Rep is the in-band representation,
  * and each free block's tree-node storage lives at the block's own
  * head bytes. The test allocates a single chunk-aligned backing
  * buffer and treats addresses within it as block bases.
@@ -19,7 +19,7 @@
 #include <new>
 #include <set>
 #include <snmalloc/backend_helpers/authmap.h>
-#include <snmalloc/backend_helpers/backend_arena.h>
+#include <snmalloc/backend_helpers/arena.h>
 #include <snmalloc/backend_helpers/inplacerep.h>
 #include <snmalloc/backend_helpers/smallarenarange.h>
 #include <vector>
@@ -33,7 +33,7 @@ namespace snmalloc
   // Arena spans one chunk's worth of space (max block size =
   // MIN_CHUNK_SIZE - UNIT_SIZE, since the arena's MAX is exclusive).
   static constexpr size_t MAX_SIZE_BITS = MIN_CHUNK_BITS;
-  using Arena = BackendArena<Rep, MIN_BITS, MAX_SIZE_BITS>;
+  using TestArena = Arena<Rep, MIN_BITS, MAX_SIZE_BITS>;
 
   // Backing buffer: must be UNIT_SIZE-aligned so block bases are
   // unit-aligned and the in-band node fields land at the expected
@@ -75,24 +75,24 @@ namespace snmalloc
     uintptr_t a = unit_addr(0);
 
     for (auto v :
-         {BackendArenaVariant::Min,
-          BackendArenaVariant::EvenTwo,
-          BackendArenaVariant::OddTwo,
-          BackendArenaVariant::Large})
+         {ArenaVariant::Min,
+          ArenaVariant::EvenTwo,
+          ArenaVariant::OddTwo,
+          ArenaVariant::Large})
     {
       Rep::set_variant(a, v);
       SNMALLOC_CHECK(Rep::get_variant(a) == v);
     }
 
     // Variant tag must not interfere with the red bit at bit 0.
-    Rep::set_variant(a, BackendArenaVariant::OddTwo);
+    Rep::set_variant(a, ArenaVariant::OddTwo);
     Rep::BinRep::set_red(a, true);
     SNMALLOC_CHECK(Rep::BinRep::is_red(a));
-    SNMALLOC_CHECK(Rep::get_variant(a) == BackendArenaVariant::OddTwo);
+    SNMALLOC_CHECK(Rep::get_variant(a) == ArenaVariant::OddTwo);
 
     Rep::BinRep::set_red(a, false);
     SNMALLOC_CHECK(!Rep::BinRep::is_red(a));
-    SNMALLOC_CHECK(Rep::get_variant(a) == BackendArenaVariant::OddTwo);
+    SNMALLOC_CHECK(Rep::get_variant(a) == ArenaVariant::OddTwo);
 
     printf("  Variant + red roundtrip: OK\n");
   }
@@ -138,7 +138,7 @@ namespace snmalloc
   // (B2) `can_consolidate` refuses chunk-boundary merges.
   // SmallArenaRange splits incoming ranges at chunk boundaries, but
   // adjacent intra-chunk fragments meeting at a boundary would
-  // otherwise be merged by BackendArena. The predicate is what
+  // otherwise be merged by Arena. The predicate is what
   // prevents that.
   // ==================================================================
 
@@ -163,7 +163,7 @@ namespace snmalloc
   static void test_arena_add_remove_single()
   {
     reset_backing();
-    Arena arena;
+    TestArena arena;
     arena.check_invariant(true);
 
     auto a = unit_addr(0);
@@ -185,7 +185,7 @@ namespace snmalloc
   static void test_arena_consolidation()
   {
     reset_backing();
-    Arena arena;
+    TestArena arena;
 
     auto a = unit_addr(0);
     auto b = unit_addr(4);
@@ -211,7 +211,7 @@ namespace snmalloc
   static void test_arena_carve()
   {
     reset_backing();
-    Arena arena;
+    TestArena arena;
 
     auto a = unit_addr(0);
     arena.add_block(a, unit_size(8));
@@ -246,7 +246,7 @@ namespace snmalloc
   static constexpr size_t STRESS_UNITS =
     (size_t(1) << MAX_SIZE_BITS) / UNIT_SIZE - 1;
 
-  using Bins = BackendArenaBins<2, MIN_BITS>;
+  using Bins = ArenaBins<2, MIN_BITS>;
 
   struct OracleRange
   {
@@ -347,7 +347,7 @@ namespace snmalloc
   static void test_stress_seed(size_t seed, size_t num_ops)
   {
     reset_backing();
-    Arena arena;
+    TestArena arena;
     Oracle oracle;
 
     // All units initially allocated (i.e., not in the arena).

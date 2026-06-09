@@ -3,7 +3,7 @@
 #include "../ds_core/bits.h"
 #include "../ds_core/defines.h"
 #include "../ds_core/sizeclassconfig.h"
-#include "backend_arena.h"
+#include "arena.h"
 
 #include <stdint.h>
 
@@ -11,7 +11,7 @@ namespace snmalloc
 {
   /**
    * In-band tree node stored at the head of a free block managed by
-   * `BackendArena`. Two pointer-sized words per unit; bit-packing of
+   * `Arena`. Two pointer-sized words per unit; bit-packing of
    * red and variant tags lives in `word_one`. Stored as `uintptr_t`
    * so we can OR meta bits into the pointer slot without UB on
    * non-capability platforms (on CHERI, capabilities to access these
@@ -25,7 +25,7 @@ namespace snmalloc
   };
 
   /**
-   * In-band `Rep` for `BackendArena`. Each free block carries its
+   * In-band `Rep` for `Arena`. Each free block carries its
    * own tree-node and metadata storage in its first few units:
    *
    *   Unit 0 (addr):                bin-tree node + variant tag.
@@ -34,7 +34,7 @@ namespace snmalloc
    *
    * Bit layout in `word_one` of each unit:
    *   bit 0           : red bit (both trees)
-   *   bits 1..2       : variant tag (`BackendArenaVariant`, unit 0 only)
+   *   bits 1..2       : variant tag (`ArenaVariant`, unit 0 only)
    * `word_two` holds the second child pointer with no packed meta.
    * Both child pointers are unit-aligned, so their low `MIN_BITS`
    * bits are zero — the packed meta occupies bits below
@@ -231,14 +231,14 @@ namespace snmalloc
     using BinRep = TreeRep<0, BIN_META_MASK, BIN_REP_NAME>;
     using RangeRep = TreeRep<1, RANGE_META_MASK, RANGE_REP_NAME>;
 
-    static BackendArenaVariant get_variant(uintptr_t addr)
+    static ArenaVariant get_variant(uintptr_t addr)
     {
       auto w = unit_at<0>(addr)->word_one;
-      return static_cast<BackendArenaVariant>(
+      return static_cast<ArenaVariant>(
         (w & VARIANT_MASK) >> VARIANT_SHIFT);
     }
 
-    static void set_variant(uintptr_t addr, BackendArenaVariant v)
+    static void set_variant(uintptr_t addr, ArenaVariant v)
     {
       auto* w = &unit_at<0>(addr)->word_one;
       *w = (*w & ~VARIANT_MASK) | (static_cast<uintptr_t>(v) << VARIANT_SHIFT);
@@ -265,7 +265,7 @@ namespace snmalloc
      * Refuse consolidation across `MIN_CHUNK_SIZE` boundaries.
      * `SmallArenaRange::add_range_impl` splits incoming ranges at
      * chunk boundaries, but does not eagerly merge across them on
-     * the wrapper side; this check is what stops `BackendArena`
+     * the wrapper side; this check is what stops `Arena`
      * from later merging two adjacent intra-chunk fragments that
      * happen to abut the same chunk boundary, which would create a
      * free block straddling chunks. Chunk-aligned `higher_addr`

@@ -1,7 +1,7 @@
 /**
- * Unit tests for BackendArenaRange and PagemapRep.
+ * Unit tests for LargeArenaRange and PagemapRep.
  *
- * Tests the Range wrapper around BackendArena using a real pagemap,
+ * Tests the Range wrapper around Arena using a real pagemap,
  * exercising alloc_range, dealloc_range, refill, and overflow paths.
  */
 
@@ -43,14 +43,14 @@ namespace
   // Simple parent: PalRange + PagemapRegisterRange.
   using ParentSource = Pipe<PalRange<Pal>, PagemapRegisterRange<TestPagemap>>;
 
-  // BackendArenaRange under test: global range (MAX_SIZE_BITS = BITS - 1).
+  // LargeArenaRange under test: global range (MAX_SIZE_BITS = BITS - 1).
   // This means overflow dealloc never goes to parent (matches the global
   // range configuration).
   static constexpr size_t REFILL_BITS = 20;
   static constexpr size_t MAX_BITS = bits::BITS - 1;
 
   using ArenaRange =
-    Pipe<ParentSource, BackendArenaRange<REFILL_BITS, MAX_BITS, TestPagemap>>;
+    Pipe<ParentSource, LargeArenaRange<REFILL_BITS, MAX_BITS, TestPagemap>>;
 
   // --- Tests ---
 
@@ -294,7 +294,7 @@ int main()
 {
   setup();
 
-  printf("--- BackendArenaRange tests ---\n");
+  printf("--- LargeArenaRange tests ---\n");
 
   test_basic_alloc_dealloc();
   test_multiple_sizes();
@@ -304,6 +304,6 @@ int main()
   test_large_then_small();
   test_non_pow2_sizes();
 
-  printf("All BackendArenaRange tests passed.\n");
+  printf("All LargeArenaRange tests passed.\n");
   return 0;
 }
