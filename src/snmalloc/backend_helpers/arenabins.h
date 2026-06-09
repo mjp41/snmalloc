@@ -318,7 +318,7 @@ namespace snmalloc
       /// so callers can size parallel arrays (one RB-tree per bin id).
       static constexpr size_t TOTAL_BINS = BINS_PER_EXP * bits::BITS;
 
-      Bitmap() : words_{} {}
+      constexpr Bitmap() : words_{} {}
 
       /**
        * Classify `block`, set its bin's bit, return the bin id.
@@ -373,6 +373,7 @@ namespace snmalloc
       {
         const bitmap_info_t& info = bitmap_info_for_request(n);
         SNMALLOC_ASSERT(info.start_word < NUM_BITMAP_WORDS);
+        SNMALLOC_ASSUME(info.start_word < NUM_BITMAP_WORDS);
 
         // First word: start bin + any within-exp neighbours in same word.
         size_t word = info.start_word;

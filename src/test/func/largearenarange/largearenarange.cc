@@ -190,6 +190,7 @@ namespace
       uintptr_t addr = p.unsafe_uintptr();
       SNMALLOC_ASSERT(
         (addr & (sizes[i] - 1)) == 0 && "Allocation not properly aligned");
+      UNUSED(addr);
       range.dealloc_range(p, sizes[i]);
     }
 
@@ -265,6 +266,7 @@ namespace
         uintptr_t lo_j = ptrs[j].unsafe_uintptr();
         uintptr_t hi_j = lo_j + sizes[j];
         SNMALLOC_ASSERT(hi_i <= lo_j || hi_j <= lo_i);
+        UNUSED(hi_i, hi_j);
       }
     }
 

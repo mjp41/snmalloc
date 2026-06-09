@@ -457,7 +457,7 @@ namespace snmalloc
           // insufficient to accurately display the tree, but it will still be
           // memory safe as the search code is bounded by the string size.
           static constexpr size_t max_depth = 128;
-          char s_indent[max_depth];
+          char s_indent[max_depth] = {};
           size_t end = 0;
           for (; end < max_depth - 1; end++)
           {

@@ -92,6 +92,7 @@ namespace snmalloc
   {
     size_t idx = addr >> MIN_CHUNK_BITS;
     SNMALLOC_ASSERT(idx < MOCK_ARENA_CHUNKS);
+    SNMALLOC_ASSUME(idx < MOCK_ARENA_CHUNKS);
     return idx;
   }
 
@@ -462,6 +463,7 @@ namespace snmalloc
     {
       auto r2 = arena.remove_block(chunk_size(1));
       SNMALLOC_ASSERT(r2 != 0);
+      UNUSED(r2);
       arena.check_invariant(true);
       remaining -= chunk_size(1);
     }
@@ -666,6 +668,7 @@ namespace snmalloc
     auto& bt0 = ArenaTestAccess::get_bin_trees(arena)[0];
     auto p3 = bt0.get_root_path();
     SNMALLOC_ASSERT(bt0.find(p3, chunk_addr(11)));
+    UNUSED(p1, p2, p3);
 
     size_t total = drain_arena(arena);
     SNMALLOC_ASSERT(total == 4);
@@ -1062,6 +1065,7 @@ namespace snmalloc
 
         auto arena_result = arena.remove_block(chunk_size(n));
         auto oracle_result = oracle.remove(n);
+        UNUSED(arena_result);
 
         // Both should agree on success/failure.
         if (oracle_result.second == 0)
@@ -1071,7 +1075,6 @@ namespace snmalloc
         else
         {
           SNMALLOC_ASSERT(arena_result != 0);
-          // Arena should return the address oracle predicts.
           SNMALLOC_ASSERT(
             arena_result == chunk_addr(BASE + oracle_result.first));
 
@@ -1166,6 +1169,7 @@ namespace snmalloc
     // B should now serve a size-12 request from the consolidated block.
     uintptr_t r_addr = arena_b.remove_block(chunk_size(12));
     SNMALLOC_ASSERT(r_addr == chunk_addr(BASE + 20));
+    UNUSED(r_addr);
     arena_b.check_invariant(true);
 
     printf("  Consolidation after migration: OK\n");
@@ -1262,6 +1266,7 @@ namespace snmalloc
 
         auto arena_r = arena.remove_block(chunk_size(n));
         auto oracle_r = oracle.remove(n);
+        UNUSED(arena_r);
 
         if (oracle_r.second == 0)
         {
@@ -1292,6 +1297,7 @@ namespace snmalloc
         auto& dst_oracle = from_a ? oracle_b : oracle_a;
         uint8_t src_id = from_a ? 1 : 2;
         uint8_t dst_id = from_a ? 2 : 1;
+        UNUSED(src_id);
 
         size_t n = (rng.next() % 3) + 1;
         uintptr_t src_r = src.remove_block(chunk_size(n));
@@ -1375,6 +1381,7 @@ namespace snmalloc
     SNMALLOC_ASSERT(r1_addr == p_addr);
     auto r2_addr = arena.remove_block(chunk_size(2));
     SNMALLOC_ASSERT(r2_addr == a_addr);
+    UNUSED(r1_addr, r2_addr);
 
     printf("  Boundary blocks predecessor merge: OK\n");
   }
@@ -1401,6 +1408,7 @@ namespace snmalloc
     SNMALLOC_ASSERT(r1_addr == a_addr);
     auto r2_addr = arena.remove_block(chunk_size(4));
     SNMALLOC_ASSERT(r2_addr == s_addr);
+    UNUSED(r1_addr, r2_addr);
 
     printf("  Boundary blocks successor merge: OK\n");
   }
@@ -1427,6 +1435,7 @@ namespace snmalloc
     SNMALLOC_ASSERT(r1_addr == chunk_addr(4));
     auto r2_addr = arena.remove_block(chunk_size(2));
     SNMALLOC_ASSERT(r2_addr == chunk_addr(8));
+    UNUSED(r1_addr, r2_addr);
 
     printf("  Boundary partial (P merges, S blocked): OK\n");
   }
@@ -1454,6 +1463,7 @@ namespace snmalloc
 
     auto r1 = arena.remove_block(chunk_size(4));
     SNMALLOC_ASSERT(r1 == top_addr);
+    UNUSED(r1);
 
     printf("  Block at arena top edge: OK\n");
   }
@@ -1480,6 +1490,7 @@ namespace snmalloc
     SNMALLOC_ASSERT(
       (r1_addr == p_addr && r2_addr == a_addr) ||
       (r1_addr == a_addr && r2_addr == p_addr));
+    UNUSED(r1_addr, r2_addr);
 
     printf("  Boundary blocks min predecessor merge: OK\n");
   }
