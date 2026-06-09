@@ -39,13 +39,18 @@ namespace snmalloc
   // unit-aligned and the in-band node fields land at the expected
   // offsets. Sized to comfortably cover the arena's full range plus
   // a small base offset that keeps block addresses non-zero (zero
-  // is the tree null sentinel).
-  alignas(MIN_CHUNK_SIZE) static unsigned char backing[2 * MIN_CHUNK_SIZE];
+  // is the tree null sentinel). Oversized by MIN_CHUNK_SIZE so the
+  // base can be aligned up at runtime — MSVC rejects alignas values
+  // as large as MIN_CHUNK_SIZE on static storage.
+  static unsigned char backing[3 * MIN_CHUNK_SIZE];
 
   static uintptr_t base_addr()
   {
-    // Offset by MIN_CHUNK_SIZE to keep addresses well clear of zero.
-    return reinterpret_cast<uintptr_t>(&backing[MIN_CHUNK_SIZE]);
+    // Round up to MIN_CHUNK_SIZE, then offset by MIN_CHUNK_SIZE to
+    // keep addresses well clear of zero.
+    uintptr_t raw = reinterpret_cast<uintptr_t>(&backing[0]);
+    uintptr_t aligned = (raw + MIN_CHUNK_SIZE - 1) & ~(MIN_CHUNK_SIZE - 1);
+    return aligned + MIN_CHUNK_SIZE;
   }
 
   static void reset_backing()
@@ -447,14 +452,22 @@ namespace snmalloc
   // ==================================================================
 
   // Pool of chunk-aligned buffers, handed out as a chunk-granularity
-  // parent range to SmallArenaRange.
+  // parent range to SmallArenaRange. Oversized by MIN_CHUNK_SIZE so
+  // `pool_base()` can align up at runtime — MSVC rejects alignas
+  // values as large as MIN_CHUNK_SIZE on static storage.
   static constexpr size_t POOL_CHUNKS = 8;
-  alignas(MIN_CHUNK_SIZE) static unsigned char pool_storage
-    [POOL_CHUNKS * MIN_CHUNK_SIZE];
+  static unsigned char pool_storage[(POOL_CHUNKS + 1) * MIN_CHUNK_SIZE];
   static bool pool_in_use[POOL_CHUNKS];
   // Track returns to detect leaks / double-frees.
   static size_t pool_alloc_count;
   static size_t pool_dealloc_count;
+
+  static unsigned char* pool_base()
+  {
+    uintptr_t raw = reinterpret_cast<uintptr_t>(&pool_storage[0]);
+    uintptr_t aligned = (raw + MIN_CHUNK_SIZE - 1) & ~(MIN_CHUNK_SIZE - 1);
+    return reinterpret_cast<unsigned char*>(aligned);
+  }
 
   static void reset_pool()
   {
@@ -485,7 +498,7 @@ namespace snmalloc
           pool_in_use[i] = true;
           pool_alloc_count++;
           return CapPtr<void, ChunkBounds>::unsafe_from(
-            &pool_storage[i * MIN_CHUNK_SIZE]);
+            pool_base() + i * MIN_CHUNK_SIZE);
         }
       }
       return nullptr;
@@ -495,7 +508,7 @@ namespace snmalloc
     {
       SNMALLOC_CHECK(size == MIN_CHUNK_SIZE);
       auto p = static_cast<unsigned char*>(base.unsafe_ptr());
-      auto idx = static_cast<size_t>((p - pool_storage) / MIN_CHUNK_SIZE);
+      auto idx = static_cast<size_t>(p - pool_base()) / MIN_CHUNK_SIZE;
       SNMALLOC_CHECK(idx < POOL_CHUNKS);
       SNMALLOC_CHECK(pool_in_use[idx]);
       pool_in_use[idx] = false;

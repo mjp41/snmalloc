@@ -136,6 +136,11 @@ namespace snmalloc
     {
       return value == other.value;
     }
+
+    constexpr bool operator!=(sizeclass_t other)
+    {
+      return value != other.value;
+    }
   };
 
   /**

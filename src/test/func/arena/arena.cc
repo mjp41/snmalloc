@@ -202,14 +202,17 @@ namespace snmalloc
 
     // Mirrors PagemapRep::can_consolidate, which reads
     // entry.is_boundary() from the pagemap. The boundary flag lives
-    // per-chunk in mock_store; mock_index asserts the index is in
-    // range, so any caller that probes outside the arena trips the
-    // assertion — this catches accidental out-of-region probes in
-    // Arena unit tests rather than as a release-build
-    // segfault.
+    // per-chunk in mock_store. An out-of-region probe returns false
+    // (cannot consolidate) — both because that is the right semantic
+    // (no neighbour exists outside the arena) and because it gives
+    // GCC's release-mode `-Warray-bounds` analysis a visible guard
+    // covering the `mock_store[...]` read on this branch.
     static bool can_consolidate(uintptr_t addr)
     {
-      return !mock_store[mock_index(addr)].boundary;
+      size_t idx = addr >> MIN_CHUNK_BITS;
+      if (idx >= MOCK_ARENA_CHUNKS)
+        return false;
+      return !mock_store[idx].boundary;
     }
   };
 
@@ -280,7 +283,8 @@ namespace snmalloc
     reset_mock_store();
     uintptr_t a = chunk_addr(20);
 
-    for (size_t s : {3, 7, 15, 63, 255, 1000})
+    for (size_t s :
+         {size_t{3}, size_t{7}, size_t{15}, size_t{63}, size_t{255}, size_t{1000}})
     {
       MockRep::set_large_size(a, s);
       SNMALLOC_ASSERT(MockRep::get_large_size(a) == s);
