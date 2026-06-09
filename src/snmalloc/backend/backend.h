@@ -46,7 +46,11 @@ namespace snmalloc
 
       if (local_state != nullptr)
       {
-        p = local_state->get_meta_range().alloc_range_with_leftover(size);
+        auto& meta_range = local_state->get_meta_range();
+        using MetaRangeT = stl::remove_reference_t<decltype(meta_range)>;
+        size_t alignment =
+          bits::max(bits::next_pow2(size), MetaRangeT::UNIT_SIZE);
+        p = meta_range.alloc_size_with_align(size, alignment);
       }
       else
       {
@@ -156,8 +160,7 @@ namespace snmalloc
         SNMALLOC_ASSERT(slab_index < (size_t{1} << OFFSET_BITS));
         const uintptr_t ras_i = ras | (slab_index << SIZECLASS_BITS);
         typename Pagemap::Entry t_i(meta, ras_i);
-        Pagemap::set_metaentry(
-          address_cast(p) + chunk_offset, slab_size, t_i);
+        Pagemap::set_metaentry(address_cast(p) + chunk_offset, slab_size, t_i);
       }
 
       return {Aal::capptr_bound<void, capptr::bounds::Chunk>(p, size), meta};

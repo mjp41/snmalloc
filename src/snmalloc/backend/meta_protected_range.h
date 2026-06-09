@@ -24,6 +24,7 @@ namespace snmalloc
   template<
     typename PAL,
     typename Pagemap,
+    typename Authmap,
     typename Base,
     size_t MinSizeBits = MinBaseSizeBits<PAL>()>
   struct MetaProtectedRangeLocalState : BaseLocalStateConstants
@@ -104,7 +105,7 @@ namespace snmalloc
         LocalCacheSizeBits - SubRangeRatioBits,
         bits::BITS - 1,
         Pagemap>,
-      SmallBuddyRange>;
+      SmallArenaRange<Authmap>>;
 
     ObjectRange object_range;
 
@@ -124,9 +125,9 @@ namespace snmalloc
     }
 
     // Create global range that can service small meta-data requests.
-    // Don't want to add the SmallBuddyRange to the CentralMetaRange as that
+    // Don't want to add the SmallArenaRange to the CentralMetaRange as that
     // would require committing memory inside the main global lock.
     using GlobalMetaRange =
-      Pipe<CentralMetaRange, SmallBuddyRange, GlobalRange>;
+      Pipe<CentralMetaRange, SmallArenaRange<Authmap>, GlobalRange>;
   };
 } // namespace snmalloc

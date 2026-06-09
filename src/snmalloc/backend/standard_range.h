@@ -22,6 +22,7 @@ namespace snmalloc
   template<
     typename PAL,
     typename Pagemap,
+    typename Authmap,
     typename Base = EmptyRange<>,
     size_t MinSizeBits = MinBaseSizeBits<PAL>()>
   struct StandardLocalState : BaseLocalStateConstants
@@ -56,7 +57,7 @@ namespace snmalloc
         page_size_bits>>>;
 
   private:
-    using ObjectRange = Pipe<LargeObjectRange, SmallBuddyRange>;
+    using ObjectRange = Pipe<LargeObjectRange, SmallArenaRange<Authmap>>;
 
     ObjectRange object_range;
 
@@ -67,7 +68,7 @@ namespace snmalloc
     /**
      * Where we turn for allocations of user chunks.
      *
-     * Reach over the SmallBuddyRange that's at the near end of the ObjectRange
+     * Reach over the SmallArenaRange that's at the near end of the ObjectRange
      * pipe, rather than having that range adapter dynamically branch to its
      * parent.
      */
