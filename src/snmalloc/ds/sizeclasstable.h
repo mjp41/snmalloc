@@ -318,6 +318,17 @@ namespace snmalloc
 
     constexpr SizeClassTable()
     {
+      // Sentinel slot (sizeclass_t{} / raw 0) covers any address whose
+      // pagemap entry is unmapped or owned by the backend — including
+      // foreign (non-snmalloc) heap addresses reached via the
+      // bounds-checked memcpy shim before snmalloc has seen them.
+      // `slab_mask = ~size_t(0)` makes `start_of_object` collapse
+      // `addr & ~slab_mask` to 0 and `index_in_object` to `addr`, so
+      // `remaining_bytes = sentinel.size - addr` underflows to a very
+      // large value and any memcpy bound check trivially passes the
+      // sentinel through to the destination's native checks.
+      start_[0].slab_mask = ~size_t(0);
+
       size_t max_capacity = 0;
 
       for (smallsizeclass_t sizeclass(0); sizeclass < NUM_SMALL_SIZECLASSES;
@@ -409,13 +420,16 @@ namespace snmalloc
   constexpr SizeClassTable sizeclass_metadata = SizeClassTable();
 
   // Sentinel must remain zero-initialised so fast-path lookups via
-  // `start(sc)` return zero size and slab_mask without a branch.
+  // `start(sc)` return zero size without a branch. Slab_mask is
+  // `~size_t(0)` so foreign-pointer `remaining_bytes` underflows to a
+  // huge value (see `SizeClassTable::SizeClassTable`).
   static_assert(
     sizeclass_metadata.start(sizeclass_t{}).size == 0,
     "sentinel slot must have size 0");
   static_assert(
-    sizeclass_metadata.start(sizeclass_t{}).slab_mask == 0,
-    "sentinel slot must have slab_mask 0");
+    sizeclass_metadata.start(sizeclass_t{}).slab_mask == ~size_t(0),
+    "sentinel slot must have slab_mask ~0 for foreign-pointer "
+    "remaining_bytes underflow");
 
   static_assert(
     bits::BITS - sizeclass_metadata.DIV_MULT_SHIFT <= MAX_CAPACITY_BITS);
