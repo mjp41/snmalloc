@@ -42,7 +42,8 @@ namespace snmalloc
     }
   };
 
-  using Config = snmalloc::StandardConfigClientMeta<NonPow2ClientMetaDataProvider>;
+  using Config =
+    snmalloc::StandardConfigClientMeta<NonPow2ClientMetaDataProvider>;
 } // namespace snmalloc
 
 #define SNMALLOC_PROVIDE_OWN_CONFIG

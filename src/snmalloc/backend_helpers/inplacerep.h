@@ -234,8 +234,7 @@ namespace snmalloc
     static ArenaVariant get_variant(uintptr_t addr)
     {
       auto w = unit_at<0>(addr)->word_one;
-      return static_cast<ArenaVariant>(
-        (w & VARIANT_MASK) >> VARIANT_SHIFT);
+      return static_cast<ArenaVariant>((w & VARIANT_MASK) >> VARIANT_SHIFT);
     }
 
     static void set_variant(uintptr_t addr, ArenaVariant v)

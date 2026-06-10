@@ -309,9 +309,7 @@ namespace snmalloc
      */
     class Bitmap
     {
-      friend struct ArenaBinsTestAccess<
-        INTERMEDIATE_BITS,
-        MIN_SIZE_BITS>;
+      friend struct ArenaBinsTestAccess<INTERMEDIATE_BITS, MIN_SIZE_BITS>;
 
     public:
       /// Strict upper bound on bin ids `bin_index` produces. Exposed

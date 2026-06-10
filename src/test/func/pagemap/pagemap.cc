@@ -180,8 +180,7 @@ int main(int argc, char** argv)
     auto size = bits::one_at_bit(GRANULARITY_BITS + 4);
     auto* base = NoLazyCommitPal::reserve(size);
     NoLazyCommitPal::notify_using<NoZero>(base, size);
-    auto [heap_base, heap_size] =
-      pagemap_test_bound_no_lazy.init(base, size);
+    auto [heap_base, heap_size] = pagemap_test_bound_no_lazy.init(base, size);
     auto low = address_cast(heap_base);
 
     pagemap_test_bound_no_lazy.set(low, T(7));

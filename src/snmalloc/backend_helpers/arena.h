@@ -94,9 +94,8 @@ namespace snmalloc
       if (size == UNIT_SIZE)
         return ArenaVariant::Min;
       if (size == TWO_UNITS)
-        return ((addr >> MIN_SIZE_BITS) & 1) == 0 ?
-          ArenaVariant::EvenTwo :
-          ArenaVariant::OddTwo;
+        return ((addr >> MIN_SIZE_BITS) & 1) == 0 ? ArenaVariant::EvenTwo :
+                                                    ArenaVariant::OddTwo;
       return ArenaVariant::Large;
     }
 
@@ -365,15 +364,15 @@ namespace snmalloc
 
         for (size_t bin = 0; bin < Bins::Bitmap::TOTAL_BINS; bin++)
         {
-        bin_trees[bin].for_each([&](uintptr_t node) {
-          auto [a, s] = range_from_addr(node);
-          if (s >= TWO_UNITS)
-          {
-            auto path = range_tree.get_root_path();
-            SNMALLOC_CHECK(range_tree.find(path, node));
-            bin_tree_nonmin_count++;
-          }
-        });
+          bin_trees[bin].for_each([&](uintptr_t node) {
+            auto [a, s] = range_from_addr(node);
+            if (s >= TWO_UNITS)
+            {
+              auto path = range_tree.get_root_path();
+              SNMALLOC_CHECK(range_tree.find(path, node));
+              bin_tree_nonmin_count++;
+            }
+          });
         }
 
         range_tree.for_each([&](uintptr_t node) {

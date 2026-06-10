@@ -464,9 +464,8 @@ void test_calloc_non_pow2_large()
   {
     // All sizeclasses are powers of two in this configuration, so
     // there is no non-pow2 large request to test.
-    std::cout
-      << "INTERMEDIATE_BITS == 0: all sizeclasses pow2; skipping."
-      << std::endl;
+    std::cout << "INTERMEDIATE_BITS == 0: all sizeclasses pow2; skipping."
+              << std::endl;
     return;
   }
 

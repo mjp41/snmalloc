@@ -18,8 +18,8 @@
 #include <map>
 #include <new>
 #include <set>
-#include <snmalloc/backend_helpers/authmap.h>
 #include <snmalloc/backend_helpers/arena.h>
+#include <snmalloc/backend_helpers/authmap.h>
 #include <snmalloc/backend_helpers/inplacerep.h>
 #include <snmalloc/backend_helpers/smallarenarange.h>
 #include <vector>

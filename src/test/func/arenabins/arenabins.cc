@@ -542,8 +542,7 @@ namespace
   /// (defined directly in terms of `bin_subsets`).
   template<size_t B>
   size_t reference_find(
-    size_t n_chunks,
-    const typename ArenaBinsTestAccess<B, 0>::Bitmap& bm)
+    size_t n_chunks, const typename ArenaBinsTestAccess<B, 0>::Bitmap& bm)
   {
     using Bins = ArenaBinsTestAccess<B, 0>;
     using Bitmap = typename Bins::Bitmap;

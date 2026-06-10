@@ -284,7 +284,12 @@ namespace snmalloc
     uintptr_t a = chunk_addr(20);
 
     for (size_t s :
-         {size_t{3}, size_t{7}, size_t{15}, size_t{63}, size_t{255}, size_t{1000}})
+         {size_t{3},
+          size_t{7},
+          size_t{15},
+          size_t{63},
+          size_t{255},
+          size_t{1000}})
     {
       MockRep::set_large_size(a, s);
       SNMALLOC_ASSERT(MockRep::get_large_size(a) == s);
