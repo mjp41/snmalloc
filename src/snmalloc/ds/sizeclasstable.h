@@ -555,8 +555,7 @@ namespace snmalloc
     if (SNMALLOC_LIKELY(osc.offset() == 0))
     {
       address_t slab_base = addr & ~meta.slab_mask;
-      size_t in_slab = addr - slab_base;
-      size_t index = (in_slab * meta.div_mult) >> DIV_MULT_SHIFT;
+      size_t index = slab_index(osc, addr);
       return slab_base + (index * meta.size);
     }
     address_t alloc_start = (addr & ~meta.slab_mask) - meta.offset_bytes;

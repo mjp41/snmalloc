@@ -45,12 +45,17 @@ namespace
 
   // LargeArenaRange under test: global range (MAX_SIZE_BITS = BITS - 1).
   // This means overflow dealloc never goes to parent (matches the global
-  // range configuration).
+  // range configuration). MIN_REFILL_BITS = MinBaseSizeBits<Pal>() so
+  // the first parent allocation is at least the PAL's minimum reserve
+  // size — Windows VirtualAlloc cannot reserve below its allocation
+  // granularity (64 KiB) and PalRange returns nullptr in that case.
   static constexpr size_t REFILL_BITS = 20;
   static constexpr size_t MAX_BITS = bits::BITS - 1;
+  static constexpr size_t MIN_REFILL_BITS = MinBaseSizeBits<Pal>();
 
-  using ArenaRange =
-    Pipe<ParentSource, LargeArenaRange<REFILL_BITS, MAX_BITS, TestPagemap>>;
+  using ArenaRange = Pipe<
+    ParentSource,
+    LargeArenaRange<REFILL_BITS, MAX_BITS, TestPagemap, MIN_REFILL_BITS>>;
 
   // --- Tests ---
 
